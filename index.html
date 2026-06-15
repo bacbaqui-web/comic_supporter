@@ -480,7 +480,7 @@ async function startHostPeer(){
 
     conn.on("error", err=>{
       console.error(err);
-      peerState.textContent="연결 오류가 발생했습니다.";
+      peerState.textContent="연결 오류가 발생했습니다. 전송량이 커서 끊겼을 수 있습니다. 새 버전으로 다시 시도해주세요.";
     });
   });
 
@@ -505,23 +505,81 @@ function showQr(){
 
 async function sendFullToConn(conn){
   if(!conn || !conn.open) return;
+
   conn.send({type:"reset", count:pageRecords.length});
+  await sleep(100);
 
   for(let i=0;i<pageRecords.length;i++){
     const p=pageRecords[i];
     const buffer=await p.blob.arrayBuffer();
-    conn.send({
-      type:"page",
+    await sendPageInChunks(conn, {
       index:i,
       total:pageRecords.length,
       name:p.name,
       mime:p.type,
       buffer
     });
-    await new Promise(r=>setTimeout(r,30));
   }
 
   conn.send({type:"done"});
+}
+
+async function sendPageInChunks(conn, page){
+  const CHUNK_SIZE = 48 * 1024;
+  const bytes = new Uint8Array(page.buffer);
+  const chunkCount = Math.ceil(bytes.length / CHUNK_SIZE);
+
+  conn.send({
+    type:"pageStart",
+    index:page.index,
+    total:page.total,
+    name:page.name,
+    mime:page.mime,
+    size:bytes.length,
+    chunkCount
+  });
+
+  await sleep(20);
+
+  for(let chunkIndex=0; chunkIndex<chunkCount; chunkIndex++){
+    const start = chunkIndex * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, bytes.length);
+    const chunk = bytes.slice(start, end).buffer;
+
+    conn.send({
+      type:"pageChunk",
+      index:page.index,
+      chunkIndex,
+      chunk
+    });
+
+    await waitForDataChannel(conn);
+  }
+
+  conn.send({
+    type:"pageEnd",
+    index:page.index
+  });
+
+  await sleep(40);
+}
+
+function sleep(ms){
+  return new Promise(r=>setTimeout(r, ms));
+}
+
+async function waitForDataChannel(conn){
+  const dc = conn && conn._dc;
+  if(!dc){
+    await sleep(8);
+    return;
+  }
+
+  while(dc.bufferedAmount > 512 * 1024){
+    await sleep(20);
+  }
+
+  await sleep(4);
 }
 
 async function broadcastFull(){
@@ -573,7 +631,7 @@ function startMobileViewer(targetId){
 
     mobileConn.on("close", ()=>{
       setStatus("PC 연결 끊김");
-      setMessage("PC 연결이 끊겼습니다.");
+      setMessage("PC 연결이 끊겼습니다.<br>전송 중 끊겼다면 PC에서 QR창을 닫았다가 다시 열어주세요.");
     });
 
     mobileConn.on("error", err=>{
@@ -589,25 +647,56 @@ function startMobileViewer(targetId){
   });
 }
 
+const incomingPages = new Map();
+
 function handleMobileData(data){
   if(data.type==="reset"){
     clearPages();
+    incomingPages.clear();
     setMessage("원고를 받는 중...");
-    setStatus(`0 / ${data.count || 0} 수신 중`);
+    setStatus(`0 / ${data.count || 0} 수신 준비`);
     return;
   }
 
-  if(data.type==="page"){
-    const blob=new Blob([data.buffer], {type:data.mime || "image/png"});
+  if(data.type==="pageStart"){
+    incomingPages.set(data.index, {
+      index:data.index,
+      total:data.total,
+      name:data.name,
+      mime:data.mime || "image/png",
+      chunkCount:data.chunkCount,
+      chunks:new Array(data.chunkCount),
+      received:0
+    });
+    setStatus(`${data.index+1} / ${data.total} 수신 시작\n${data.name || ""}`);
+    return;
+  }
+
+  if(data.type==="pageChunk"){
+    const page=incomingPages.get(data.index);
+    if(!page) return;
+    page.chunks[data.chunkIndex]=data.chunk;
+    page.received++;
+    setStatus(`${page.index+1} / ${page.total} 수신 중\n${page.name || ""}\n${page.received} / ${page.chunkCount} 조각`);
+    return;
+  }
+
+  if(data.type==="pageEnd"){
+    const page=incomingPages.get(data.index);
+    if(!page) return;
+
+    const blob=new Blob(page.chunks, {type:page.mime});
     const url=URL.createObjectURL(blob);
     const img=document.createElement("img");
     img.className="page";
-    img.alt=data.name || "";
+    img.alt=page.name || "";
     img.src=url;
     viewer.appendChild(img);
-    pageRecords.push({name:data.name, type:blob.type, blob, url});
+    pageRecords.push({name:page.name, type:blob.type, blob, url});
+    incomingPages.delete(data.index);
+
     hideMessage();
-    setStatus(`${data.index+1} / ${data.total} 수신 중`);
+    setStatus(`${page.index+1} / ${page.total} 표시 완료`);
     return;
   }
 
