@@ -7,101 +7,93 @@
 <style>
 *{box-sizing:border-box}
 html,body{
-  margin:0;
-  padding:0;
-  background:#111;
-  color:#999;
+  margin:0;padding:0;background:#111;color:#999;
   font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
 }
 #toolbar{
-  position:fixed;
-  top:12px;
-  right:12px;
-  z-index:20;
-  display:flex;
-  gap:8px;
+  position:fixed;top:12px;right:12px;z-index:30;
+  display:flex;gap:8px;align-items:flex-start;
 }
-button,.fileButton{
-  width:44px;
-  height:44px;
-  border:0;
-  border-radius:999px;
-  background:rgba(35,35,35,.92);
-  color:white;
-  cursor:pointer;
-  display:grid;
-  place-items:center;
+button{
+  width:44px;height:44px;border:0;border-radius:999px;
+  background:rgba(35,35,35,.92);color:white;cursor:pointer;
+  display:grid;place-items:center;
 }
-button:hover,.fileButton:hover{background:rgba(80,80,80,.96)}
+button:hover{background:rgba(80,80,80,.96)}
 svg{width:22px;height:22px;stroke:currentColor}
 #folderInput{display:none}
 #message{
-  min-height:100vh;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  text-align:center;
-  line-height:1.6;
-  padding:40px;
-  color:#777;
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  text-align:center;line-height:1.6;padding:40px;color:#777;
 }
 #viewer{
-  width:690px;
-  max-width:100vw;
-  margin:0 auto;
-  line-height:0;
-  background:#111;
+  width:690px;max-width:100vw;margin:0 auto;line-height:0;background:#111;
 }
 .page{
-  width:690px;
-  max-width:100vw;
-  height:auto;
-  display:block;
-  margin:0 auto;
-  background:#222;
+  width:690px;max-width:100vw;height:auto;display:block;margin:0 auto;background:#222;
 }
 #status{
-  position:fixed;
-  left:12px;
-  bottom:12px;
-  z-index:20;
+  position:fixed;left:12px;bottom:12px;z-index:30;
   max-width:calc(100vw - 24px);
-  background:rgba(0,0,0,.78);
-  border:1px solid #333;
-  border-radius:12px;
-  padding:10px 12px;
-  font-size:12px;
-  line-height:1.45;
-  color:#bbb;
-  white-space:pre-wrap;
+  background:rgba(0,0,0,.78);border:1px solid #333;border-radius:12px;
+  padding:10px 12px;font-size:12px;line-height:1.45;color:#bbb;white-space:pre-wrap;
 }
+#modalBackdrop{
+  display:none;position:fixed;inset:0;z-index:100;
+  background:rgba(0,0,0,.72);align-items:center;justify-content:center;padding:24px;
+}
+#mobileModal{
+  width:min(420px,100%);background:#181818;border:1px solid #333;border-radius:18px;
+  padding:22px;text-align:center;box-shadow:0 20px 80px rgba(0,0,0,.45);
+}
+#mobileModal h2{margin:0 0 10px;color:#eee;font-size:20px}
+#mobileModal p{margin:8px 0;color:#aaa;font-size:14px;line-height:1.55}
+#qrBox{
+  width:236px;height:236px;margin:18px auto 12px;padding:8px;background:#fff;border-radius:12px;
+  display:grid;place-items:center;
+}
+#qrBox:empty::before{content:"QR 준비 중";color:#777;font-size:13px}
+#mobileUrl{
+  word-break:break-all;color:#ddd;font-size:12px;background:#111;border:1px solid #333;
+  border-radius:10px;padding:10px;margin-top:10px;line-height:1.4;
+}
+.modalActions{display:flex;gap:8px;justify-content:center;margin-top:14px}
+.modalActions button{
+  width:auto;height:38px;border-radius:999px;padding:0 16px;font-size:13px;
+}
+#closeModalBtn{background:#333}
+#copyUrlBtn{background:#3a3a3a}
+.viewerMode #toolbar{display:none}
+.viewerMode #status{left:50%;transform:translateX(-50%);bottom:12px}
 </style>
 </head>
 <body>
 
 <div id="toolbar">
-  <label class="fileButton" title="폴더 열기">
-    <input id="folderInput" type="file" webkitdirectory directory multiple />
+  <button id="folderBtn" title="폴더 열기">
     <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-      <path d="M3 7h7l2 2h9v10H3z"/>
-      <path d="M3 7v12"/>
+      <path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7v12"/>
     </svg>
-  </label>
+  </button>
+  <input id="folderInput" type="file" webkitdirectory directory multiple />
+
+  <button id="mobileBtn" title="모바일 연결">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+      <rect x="7" y="2" width="10" height="20" rx="2"/>
+      <path d="M11 18h2"/>
+    </svg>
+  </button>
 
   <button id="refreshBtn" title="새로고침">
     <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-      <path d="M21 12a9 9 0 1 1-3-6.7"/>
-      <path d="M21 3v6h-6"/>
+      <path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>
     </svg>
   </button>
 
   <button id="clearBtn" title="초기화">
     <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-      <path d="M3 6h18"/>
-      <path d="M8 6V4h8v2"/>
-      <path d="M6 6l1 15h10l1-15"/>
-      <path d="M10 11v6"/>
-      <path d="M14 11v6"/>
+      <path d="M3 6h18"/><path d="M8 6V4h8v2"/>
+      <path d="M6 6l1 15h10l1-15"/><path d="M10 11v6"/><path d="M14 11v6"/>
     </svg>
   </button>
 </div>
@@ -110,38 +102,184 @@ svg{width:22px;height:22px;stroke:currentColor}
 <div id="viewer"></div>
 <div id="status">대기 중</div>
 
+<div id="modalBackdrop">
+  <div id="mobileModal">
+    <h2>모바일에서 보기</h2>
+    <p>PC와 휴대폰이 인터넷에 연결되어 있어야 합니다.<br>연결이 잘 안 되면 같은 와이파이 또는 핫스팟에서 시도하세요.</p>
+    <p>아래 QR을 휴대폰 카메라로 찍으면<br>현재 PC에서 보고 있는 원고가 휴대폰 브라우저에 표시됩니다.</p>
+    <div id="qrBox"></div>
+    <div id="mobileUrl">연결 주소 준비 중...</div>
+    <p id="peerState">연결 대기 중...</p>
+    <div class="modalActions">
+      <button id="copyUrlBtn">주소 복사</button>
+      <button id="closeModalBtn">닫기</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
 <script>
 const folderInput=document.getElementById("folderInput");
+const folderBtn=document.getElementById("folderBtn");
+const mobileBtn=document.getElementById("mobileBtn");
+const refreshBtn=document.getElementById("refreshBtn");
+const clearBtn=document.getElementById("clearBtn");
 const viewer=document.getElementById("viewer");
 const message=document.getElementById("message");
 const statusBox=document.getElementById("status");
+const modalBackdrop=document.getElementById("modalBackdrop");
+const qrBox=document.getElementById("qrBox");
+const mobileUrlBox=document.getElementById("mobileUrl");
+const peerState=document.getElementById("peerState");
 
 let lastFiles=[];
+let directoryHandle=null;
+let directorySignature="";
+let watchTimer=null;
 let SQLPromise=null;
+
+let pageRecords=[]; // {name, type, blob, url}
+let hostPeer=null;
+let hostId=null;
+let hostConnections=[];
+let mobileConn=null;
+let isMobileViewer=false;
+let sending=false;
+
+const params=new URLSearchParams(location.search);
+const joinHostId=params.get("host");
+if(joinHostId){
+  isMobileViewer=true;
+  document.body.classList.add("viewerMode");
+  startMobileViewer(joinHostId);
+}
 
 function setStatus(t){statusBox.textContent=t;}
 function setMessage(t){message.style.display="flex";message.innerHTML=t;}
 function hideMessage(){message.style.display="none";}
 
+folderBtn.addEventListener("click", openFolder);
 folderInput.addEventListener("change", async e=>{
+  stopDirectoryWatch();
+  directoryHandle=null;
   const files=Array.from(e.target.files || []);
   lastFiles=files;
   await loadClipFiles(files);
 });
 
-document.getElementById("refreshBtn").onclick=async()=>{
-  if(lastFiles.length) await loadClipFiles(lastFiles);
-  else setStatus("먼저 폴더를 열어주세요");
+refreshBtn.onclick=async()=>{
+  if(directoryHandle){
+    await reloadFromDirectoryHandle();
+  }else if(lastFiles.length){
+    await loadClipFiles(lastFiles);
+  }else{
+    setStatus("먼저 폴더를 열어주세요");
+  }
 };
 
-document.getElementById("clearBtn").onclick=()=>{
+clearBtn.onclick=()=>{
+  stopDirectoryWatch();
+  directoryHandle=null;
   lastFiles=[];
   folderInput.value="";
-  viewer.innerHTML="";
+  clearPages();
   setMessage("오른쪽 위 폴더 버튼을 눌러<br>CLIP 파일이 들어있는 폴더를 선택하세요");
   setStatus("초기화됨");
+  broadcastReset();
 };
+
+mobileBtn.onclick=async()=>{
+  modalBackdrop.style.display="flex";
+  await startHostPeer();
+};
+
+document.getElementById("closeModalBtn").onclick=()=>{
+  modalBackdrop.style.display="none";
+};
+
+document.getElementById("copyUrlBtn").onclick=async()=>{
+  const text=mobileUrlBox.textContent.trim();
+  if(!text || text.includes("준비")) return;
+  await navigator.clipboard.writeText(text);
+  peerState.textContent="주소를 복사했습니다.";
+};
+
+modalBackdrop.addEventListener("click", e=>{
+  if(e.target===modalBackdrop) modalBackdrop.style.display="none";
+});
+
+async function openFolder(){
+  if(window.showDirectoryPicker){
+    try{
+      directoryHandle=await window.showDirectoryPicker({mode:"read"});
+      await reloadFromDirectoryHandle();
+      startDirectoryWatch();
+      return;
+    }catch(e){
+      if(e.name==="AbortError") return;
+      console.warn(e);
+    }
+  }
+  folderInput.click();
+}
+
+async function reloadFromDirectoryHandle(){
+  if(!directoryHandle) return;
+  const files=await getFilesFromDirectoryHandle(directoryHandle);
+  lastFiles=files;
+  directorySignature=makeSignature(files);
+  await loadClipFiles(files);
+}
+
+async function getFilesFromDirectoryHandle(handle, prefix=""){
+  const files=[];
+  for await (const [name, entry] of handle.entries()){
+    if(entry.kind==="file"){
+      if(name.toLowerCase().endsWith(".clip")){
+        const file=await entry.getFile();
+        file._relativePath=prefix+name;
+        files.push(file);
+      }
+    }else if(entry.kind==="directory"){
+      const child=await getFilesFromDirectoryHandle(entry, prefix+name+"/");
+      files.push(...child);
+    }
+  }
+  return files;
+}
+
+function startDirectoryWatch(){
+  stopDirectoryWatch();
+  if(!directoryHandle) return;
+  watchTimer=setInterval(async()=>{
+    try{
+      const files=await getFilesFromDirectoryHandle(directoryHandle);
+      const sig=makeSignature(files);
+      if(sig!==directorySignature){
+        directorySignature=sig;
+        lastFiles=files;
+        await loadClipFiles(files, true);
+      }
+    }catch(e){
+      console.warn(e);
+    }
+  }, 2500);
+}
+
+function stopDirectoryWatch(){
+  if(watchTimer) clearInterval(watchTimer);
+  watchTimer=null;
+}
+
+function makeSignature(files){
+  return files
+    .map(f=>`${getSortName(f)}:${f.size}:${f.lastModified}`)
+    .sort()
+    .join("|");
+}
 
 async function getSQL(){
   if(!SQLPromise){
@@ -158,12 +296,20 @@ function naturalSort(a,b){
 }
 
 function getSortName(file){
-  return file.webkitRelativePath || file.name;
+  return file._relativePath || file.webkitRelativePath || file.name;
 }
 
-async function loadClipFiles(files){
+function clearPages(){
   viewer.innerHTML="";
-  setMessage("불러오는 중...");
+  for(const p of pageRecords){
+    if(p.url) URL.revokeObjectURL(p.url);
+  }
+  pageRecords=[];
+}
+
+async function loadClipFiles(files, auto=false){
+  clearPages();
+  setMessage(auto ? "변경 감지됨<br>다시 불러오는 중..." : "불러오는 중...");
   setStatus("파일 확인 중...");
 
   const clipFiles=files
@@ -173,6 +319,7 @@ async function loadClipFiles(files){
   if(!clipFiles.length){
     setMessage(".clip 파일을 찾지 못했습니다");
     setStatus("실패: .clip 없음");
+    broadcastReset();
     return;
   }
 
@@ -201,13 +348,21 @@ async function loadClipFiles(files){
         continue;
       }
 
+      const url=URL.createObjectURL(blob);
       const img=document.createElement("img");
       img.className="page";
       img.alt=file.name;
-      img.src=URL.createObjectURL(blob);
+      img.src=url;
       viewer.appendChild(img);
-      success++;
 
+      pageRecords.push({
+        name:file.name,
+        type:blob.type,
+        blob,
+        url
+      });
+
+      success++;
       if(success===1) hideMessage();
 
     }catch(err){
@@ -221,9 +376,11 @@ async function loadClipFiles(files){
   if(success){
     hideMessage();
     setStatus(`완료\n표시: ${success}개 / 실패: ${failed}개`);
+    broadcastFull();
   }else{
     setMessage("미리보기 이미지를 찾지 못했습니다");
     setStatus(`실패: ${failed}개`);
+    broadcastReset();
   }
 }
 
@@ -283,6 +440,187 @@ function findAscii(bytes, text){
     return i;
   }
   return -1;
+}
+
+/* ---------- WebRTC / PeerJS ---------- */
+
+async function startHostPeer(){
+  if(hostPeer && hostId){
+    showQr();
+    return;
+  }
+
+  peerState.textContent="연결 준비 중...";
+  qrBox.innerHTML="";
+  mobileUrlBox.textContent="연결 주소 준비 중...";
+
+  hostPeer=new Peer();
+
+  hostPeer.on("open", id=>{
+    hostId=id;
+    showQr();
+    peerState.textContent="QR을 스캔하면 연결됩니다.";
+  });
+
+  hostPeer.on("connection", conn=>{
+    hostConnections.push(conn);
+    peerState.textContent="휴대폰 연결됨. 원고 전송 중...";
+    setStatus("모바일 연결됨");
+
+    conn.on("open", async()=>{
+      await sendFullToConn(conn);
+      sendScrollToConn(conn);
+      peerState.textContent="휴대폰 연결됨.";
+    });
+
+    conn.on("close", ()=>{
+      hostConnections=hostConnections.filter(c=>c!==conn);
+      peerState.textContent="휴대폰 연결이 끊겼습니다.";
+    });
+
+    conn.on("error", err=>{
+      console.error(err);
+      peerState.textContent="연결 오류가 발생했습니다.";
+    });
+  });
+
+  hostPeer.on("error", err=>{
+    console.error(err);
+    peerState.textContent="연결 준비 실패: " + err.type;
+  });
+}
+
+function showQr(){
+  const base=location.origin + location.pathname;
+  const url=base + "?host=" + encodeURIComponent(hostId);
+  mobileUrlBox.textContent=url;
+  qrBox.innerHTML="";
+  new QRCode(qrBox, {
+    text:url,
+    width:220,
+    height:220,
+    correctLevel:QRCode.CorrectLevel.M
+  });
+}
+
+async function sendFullToConn(conn){
+  if(!conn || !conn.open) return;
+  conn.send({type:"reset", count:pageRecords.length});
+
+  for(let i=0;i<pageRecords.length;i++){
+    const p=pageRecords[i];
+    const buffer=await p.blob.arrayBuffer();
+    conn.send({
+      type:"page",
+      index:i,
+      total:pageRecords.length,
+      name:p.name,
+      mime:p.type,
+      buffer
+    });
+    await new Promise(r=>setTimeout(r,30));
+  }
+
+  conn.send({type:"done"});
+}
+
+async function broadcastFull(){
+  if(!hostConnections.length || sending) return;
+  sending=true;
+  const openConnections=hostConnections.filter(c=>c.open);
+  for(const conn of openConnections){
+    await sendFullToConn(conn);
+  }
+  sending=false;
+}
+
+function broadcastReset(){
+  for(const conn of hostConnections.filter(c=>c.open)){
+    conn.send({type:"reset", count:0});
+  }
+}
+
+function sendScrollToConn(conn){
+  const max=Math.max(1, document.documentElement.scrollHeight - innerHeight);
+  conn.send({type:"scroll", ratio:scrollY / max});
+}
+
+let scrollTimer=null;
+window.addEventListener("scroll", ()=>{
+  if(!hostConnections.length) return;
+  clearTimeout(scrollTimer);
+  scrollTimer=setTimeout(()=>{
+    for(const conn of hostConnections.filter(c=>c.open)) sendScrollToConn(conn);
+  }, 80);
+});
+
+function startMobileViewer(targetId){
+  clearPages();
+  setMessage("PC와 연결 중...");
+  setStatus("모바일 뷰어 모드");
+
+  const peer=new Peer();
+
+  peer.on("open", ()=>{
+    mobileConn=peer.connect(targetId, { reliable:true });
+
+    mobileConn.on("open", ()=>{
+      setMessage("연결됨<br>PC에서 원고를 전송받는 중...");
+      setStatus("PC 연결됨");
+    });
+
+    mobileConn.on("data", handleMobileData);
+
+    mobileConn.on("close", ()=>{
+      setStatus("PC 연결 끊김");
+      setMessage("PC 연결이 끊겼습니다.");
+    });
+
+    mobileConn.on("error", err=>{
+      console.error(err);
+      setStatus("연결 오류");
+    });
+  });
+
+  peer.on("error", err=>{
+    console.error(err);
+    setMessage("PC와 연결하지 못했습니다.<br>PC의 QR창을 다시 열고 새 QR로 시도해주세요.");
+    setStatus("연결 실패: " + err.type);
+  });
+}
+
+function handleMobileData(data){
+  if(data.type==="reset"){
+    clearPages();
+    setMessage("원고를 받는 중...");
+    setStatus(`0 / ${data.count || 0} 수신 중`);
+    return;
+  }
+
+  if(data.type==="page"){
+    const blob=new Blob([data.buffer], {type:data.mime || "image/png"});
+    const url=URL.createObjectURL(blob);
+    const img=document.createElement("img");
+    img.className="page";
+    img.alt=data.name || "";
+    img.src=url;
+    viewer.appendChild(img);
+    pageRecords.push({name:data.name, type:blob.type, blob, url});
+    hideMessage();
+    setStatus(`${data.index+1} / ${data.total} 수신 중`);
+    return;
+  }
+
+  if(data.type==="done"){
+    hideMessage();
+    setStatus(`완료\n표시: ${pageRecords.length}개`);
+    return;
+  }
+
+  if(data.type==="scroll"){
+    const max=Math.max(1, document.documentElement.scrollHeight - innerHeight);
+    scrollTo({top:max * data.ratio, behavior:"smooth"});
+  }
 }
 </script>
 </body>
