@@ -27,7 +27,9 @@ export function initNotes(){
         window.__notesTabs = window.__notesTabs || {};
         window.__notesTabs[prevId] = notesArea.value ?? '';
         // 디바운스가 남아있더라도 이전 탭은 즉시 저장(최소 1회 보장)
-        if(window.cloudSaveNotesFor){
+        if(window.cloudSaveNotesNow){
+          await window.cloudSaveNotesNow(prevId, window.__notesTabs[prevId]);
+        }else if(window.cloudSaveNotesFor){
           await window.cloudSaveNotesFor(prevId, window.__notesTabs[prevId]);
         }else if(window.cloudSaveNotes){
           await window.cloudSaveNotes();
@@ -318,7 +320,8 @@ if(notesArea){
   // 포커스가 빠질 때는 즉시 저장(디바운스 대기 중 유실 방지)
   notesArea.addEventListener('blur', ()=>{
     const { tabId, value } = syncLocal();
-    window.cloudSaveNotesFor && window.cloudSaveNotesFor(tabId, value);
+    if(window.cloudSaveNotesNow) window.cloudSaveNotesNow(tabId, value).catch(e=>console.error(e));
+    else window.cloudSaveNotesFor && window.cloudSaveNotesFor(tabId, value);
   });
 }
 // Expose renderer for realtime updates

@@ -249,6 +249,17 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       // Drive에서 보기 쉽게 탭 순서대로 001_기본, 002_자료 형식
       return `${pad3(idx+1)}_${makeSafeDriveName(tab?.name||tab?.id||'북마크')}`;
     }
+    function getSortedBookmarkTabs(list){
+      const tabs=Array.isArray(list)&&list.length ? list : [{id:'default',name:'기본',order:0}];
+      return [...tabs].sort((a,b)=>(Number(a.order||0)-Number(b.order||0)));
+    }
+    function getBookmarkTabFolderInfo(tabId,list){
+      const tabs=getSortedBookmarkTabs(list);
+      let idx=tabs.findIndex(t=>(t.id||'default')===(tabId||'default'));
+      if(idx<0) idx=0;
+      const tab=tabs[idx] || {id:'default',name:'기본',order:0};
+      return {tab,idx,folderName:getBookmarkTabFolderName(tab,idx)};
+    }
     async function findDriveFile(name,parentId=null,mimeType=null){
       const q=[`name='${qEscape(name)}'`,'trashed=false'];
       if(parentId) q.push(`'${parentId}' in parents`);
@@ -298,12 +309,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
 
     async function getBookmarkTabDriveFolder(tabId){
       const folders=await ensureDriveFolders();
-      const tabs=[...(window.__bookmarkTabList||[{id:'default',name:'기본',order:0}])]
-        .sort((a,b)=>(Number(a.order||0)-Number(b.order||0)));
-      let idx=tabs.findIndex(t=>(t.id||'default')===(tabId||'default'));
-      if(idx<0) idx=0;
-      const tab=tabs[idx] || {id:'default',name:'기본',order:0};
-      const folderName=getBookmarkTabFolderName(tab,idx);
+      const {folderName}=getBookmarkTabFolderInfo(tabId,window.__bookmarkTabList);
       return await getOrCreateDriveFolder(folderName,folders.bookmarks.id);
     }
 
@@ -316,6 +322,27 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       const body=new Blob([delimiter,'Content-Type: application/json; charset=UTF-8\r\n\r\n',JSON.stringify(meta),delimiter,'Content-Type: '+mimeType+'\r\n\r\n',blob,close],{type:'multipart/related; boundary='+boundary});
       const url=fileId ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,name,mimeType,modifiedTime` : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,modifiedTime';
       return await driveFetch(url,{method:fileId?'PATCH':'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body}).then(r=>r.json());
+    }
+
+    async function updateDriveFileMetadata(fileId,metadata){
+      if(!fileId) return null;
+      return await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,modifiedTime`,{
+        method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(metadata)
+      }).then(r=>r.json());
+    }
+
+    async function renameBookmarkTabDriveFolder(tabId,prevList,nextList){
+      if(!driveReady || !driveAccessToken) return;
+      const prev=getBookmarkTabFolderInfo(tabId,prevList);
+      const next=getBookmarkTabFolderInfo(tabId,nextList);
+      if(prev.folderName===next.folderName) return;
+      const folders=await ensureDriveFolders();
+      let oldFolder=await findDriveFolder(prev.folderName,folders.bookmarks.id);
+      if(!oldFolder) oldFolder=await findDriveFolder(prev.folderName,folders.app.id);
+      if(!oldFolder) return;
+      await updateDriveFileMetadata(oldFolder.id,{name:next.folderName});
     }
 
     async function deleteDriveFile(fileId){
@@ -594,16 +621,34 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     };
     window.cloudSaveAll=async()=>{ if(!ensureLogin()) return; scheduleSaveNonNotesData(); };
     window.cloudSaveStateOnly=async()=>{ if(!ensureLogin()) return; scheduleSaveNonNotesData(); };
+    function writeNoteToState(tabIdArg,valueArg){
+      const hasExplicitTabId=tabIdArg!==undefined && tabIdArg!==null;
+      const id=hasExplicitTabId ? tabIdArg : (window.__notesActiveTabId || 'memo');
+      let val=valueArg;
+      if(val===undefined){
+        const el=document.getElementById('notesArea');
+        val=el?el.value:'';
+      }
+      window.__notesTabs=window.__notesTabs||{};
+      window.__notesTabs[id]=val;
+      return id;
+    }
     window.cloudSaveNotes=async(tabIdArg,valueArg)=>{
       if(!ensureLogin()) return;
-      const id=tabIdArg || window.__notesActiveTabId || 'memo';
-      let val=valueArg;
-      if(val===undefined){ const el=document.getElementById('notesArea'); val=el?el.value:''; }
-      window.__notesTabs=window.__notesTabs||{}; window.__notesTabs[id]=val;
-      window.__notesActiveTabId=id;
+      writeNoteToState(tabIdArg,valueArg);
       scheduleSaveAppData();
     };
     window.cloudSaveNotesFor=(tabId,value)=>window.cloudSaveNotes(tabId,value);
+    window.cloudSaveNotesNow=async(tabId,value)=>{
+      if(!ensureLogin()) return;
+      const savedTabId=writeNoteToState(tabId,value);
+      if(notesPending?.tabId===savedTabId){
+        notesPending=null;
+        clearTimeout(notesTimer);
+      }
+      clearTimeout(driveSaveTimer);
+      await saveAppDataNow();
+    };
     window.cloudSetActiveNotesTab=async(tabId)=>{ window.__notesActiveTabId=tabId; scheduleSaveAppData(); };
     window.cloudAddNotesTab=async({id,name})=>{ const list=window.__notesTabList||[]; const max=list.reduce((m,t)=>Math.max(m,Number(t.order||0)),0); window.__notesTabList=[...list,{id,name,order:max+10}]; window.__notesActiveTabId=id; window.__notesTabs=window.__notesTabs||{}; window.__notesTabs[id]=''; renderEverything(); scheduleSaveAppData(); };
     window.cloudRenameNotesTab=async(tabId,newName)=>{ window.__notesTabList=(window.__notesTabList||[]).map(t=>t.id===tabId?{...t,name:newName}:t); renderEverything(); scheduleSaveAppData(); };
@@ -612,8 +657,32 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
 
     window.cloudSetActiveBookmarkTab=async(tabId)=>{ window.__bookmarkActiveTabId=tabId||'default'; renderEverything(); scheduleSaveNonNotesData(); };
     window.cloudAddBookmarkTab=async({id,name})=>{ const list=window.__bookmarkTabList||[{id:'default',name:'기본',order:0}]; const max=list.reduce((m,t)=>Math.max(m,Number(t.order||0)),0); window.__bookmarkTabList=[...list,{id,name,order:max+10}]; window.__bookmarkActiveTabId=id; renderEverything(); scheduleSaveNonNotesData(); };
-    window.cloudRenameBookmarkTab=async(tabId,name)=>{ window.__bookmarkTabList=(window.__bookmarkTabList||[]).map(t=>t.id===tabId?{...t,name}:t); renderEverything(); scheduleSaveNonNotesData(); };
-    window.cloudReorderBookmarkTabs=async(list)=>{ window.__bookmarkTabList=list; renderEverything(); scheduleSaveNonNotesData(); };
+    window.cloudRenameBookmarkTab=async(tabId,name)=>{
+      const prevList=(window.__bookmarkTabList||[{id:'default',name:'기본',order:0}]).map(t=>({...t}));
+      const nextList=prevList.map(t=>t.id===tabId?{...t,name}:t);
+      window.__bookmarkTabList=nextList;
+      renderEverything();
+      try{
+        await renameBookmarkTabDriveFolder(tabId,prevList,nextList);
+      }catch(e){
+        console.warn('bookmark tab folder rename skipped',e);
+        setDriveStatus('폴더 이름 변경 실패 · 탭 이름은 저장 예약됨',true);
+      }
+      scheduleSaveNonNotesData();
+    };
+    window.cloudReorderBookmarkTabs=async(list)=>{
+      const prevList=(window.__bookmarkTabList||[{id:'default',name:'기본',order:0}]).map(t=>({...t}));
+      window.__bookmarkTabList=list;
+      renderEverything();
+      for(const tab of list){
+        try{
+          await renameBookmarkTabDriveFolder(tab.id,prevList,list);
+        }catch(e){
+          console.warn('bookmark tab folder reorder rename skipped',tab?.name,e);
+        }
+      }
+      scheduleSaveNonNotesData();
+    };
     window.cloudDeleteBookmarkTab=async(tabId)=>{ window.imageBookmarks=(window.imageBookmarks||[]).filter(b=>(b.bookmarkTabId||'default')!==tabId); let list=(window.__bookmarkTabList||[]).filter(t=>t.id!==tabId); if(!list.length) list=[{id:'default',name:'기본',order:0}]; window.__bookmarkTabList=list; if(window.__bookmarkActiveTabId===tabId) window.__bookmarkActiveTabId=list[0].id; renderEverything(); scheduleSaveNonNotesData(); };
     window.moveBookmarkToTab=async(id,tabId)=>{ const b=(window.imageBookmarks||[]).find(x=>x.id===id); if(b){ b.bookmarkTabId=tabId||'default'; renderEverything(); scheduleSaveNonNotesData(); } };
 

@@ -18,8 +18,16 @@ export function initBookmarks(){
   const currentUrlDisplay = document.getElementById('currentUrlDisplay');
   let editMode=false;
   let currentModalBookmark=null;
+  let tabClickTimer=null;
+  const TAB_CLICK_DELAY_MS=220;
   const genId=()=> 'btab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
   const escapeHtml=(str)=>String(str??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+  const promptTabName=(title,current='')=>{
+    const name=prompt(title,current);
+    if(name===null) return null;
+    const trimmed=name.trim().slice(0,20);
+    return trimmed || null;
+  };
   const getTabs=()=>{
     const tabs=Array.isArray(window.__bookmarkTabList)&&window.__bookmarkTabList.length ? window.__bookmarkTabList : [{id:'default',name:'기본',order:0}];
     return [...tabs].sort((a,b)=>(a.order??0)-(b.order??0));
@@ -296,27 +304,34 @@ export function initBookmarks(){
     if(!tabBtn) return;
     const tabId=tabBtn.dataset.tabId;
     if(editMode && e.target.classList.contains('tab-del')){
+      clearTimeout(tabClickTimer);
       if(!confirm('이 탭과 탭 안의 북마크를 삭제할까요?')) return;
       window.cloudDeleteBookmarkTab && await window.cloudDeleteBookmarkTab(tabId);
       return;
     }
-    window.__bookmarkActiveTabId=tabId;
-    window.cloudSetActiveBookmarkTab && await window.cloudSetActiveBookmarkTab(tabId);
-    renderAll();
+    clearTimeout(tabClickTimer);
+    tabClickTimer=setTimeout(async()=>{
+      window.__bookmarkActiveTabId=tabId;
+      window.cloudSetActiveBookmarkTab && await window.cloudSetActiveBookmarkTab(tabId);
+      renderAll();
+    },TAB_CLICK_DELAY_MS);
   });
   tabsContainer?.addEventListener('dblclick', async (e)=>{
+    e.preventDefault();
+    e.stopPropagation();
+    clearTimeout(tabClickTimer);
+    if(e.target.classList.contains('tab-del')) return;
     const tabBtn=e.target.closest('.bookmark-tab'); if(!tabBtn) return;
+    if(!window.ensureLogin?.()) return;
     const tabId=tabBtn.dataset.tabId;
     const cur=getTabs().find(t=>t.id===tabId);
-    const name=prompt('탭 이름 변경', cur?.name||'');
-    if(name===null) return;
-    const trimmed=name.trim().slice(0,20);
-    if(trimmed) window.cloudRenameBookmarkTab && await window.cloudRenameBookmarkTab(tabId, trimmed);
+    const trimmed=promptTabName('탭 이름 변경', cur?.name||'');
+    if(!trimmed || trimmed===(cur?.name||'')) return;
+    window.cloudRenameBookmarkTab && await window.cloudRenameBookmarkTab(tabId, trimmed);
+    window.showFeedbackMessage?.('북마크 탭 이름이 변경되었습니다.');
   });
   addTabBtn?.addEventListener('click', async ()=>{
-    const name=prompt('새 북마크 탭 이름','새 탭');
-    if(name===null) return;
-    const trimmed=name.trim().slice(0,20);
+    const trimmed=promptTabName('새 북마크 탭 이름','새 탭');
     if(!trimmed) return;
     const id=genId();
     window.cloudAddBookmarkTab && await window.cloudAddBookmarkTab({id,name:trimmed});
