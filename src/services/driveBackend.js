@@ -23,6 +23,9 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     const DRIVE_WORKMUSIC_FILE = DRIVE_FILES.workmusic || 'workmusic.json';
     const DRIVE_CLIP_FILE = DRIVE_FILES.clipviewer || 'clipviewer.json';
     const DEFAULT_GOOGLE_CLIENT_ID = DRIVE_APP_CONFIG.googleClientId || '';
+    const SAVE_DELAY_MS = 450;
+    const NON_NOTES_SAVE_DELAY_MS = 500;
+    const NOTES_INPUT_DELAY_MS = 350;
 
     const signInBtn=document.getElementById('signInBtn');
     const signOutBtn=document.getElementById('signOutBtn');
@@ -398,22 +401,20 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         .sort((a,b)=>(Number(a.order||0)-Number(b.order||0)));
       const notes=notesPart.notesTabs||{};
       const expectedNames=new Set();
-      const indexTabs=[];
-      for(let i=0;i<tabs.length;i++){
-        const tab=tabs[i];
+      const indexTabs=await Promise.all(tabs.map(async(tab,i)=>{
         const fileName=getNoteTxtFileName(tab,i);
         expectedNames.add(fileName);
         const textBlob=new Blob([notes[tab.id]||''],{type:'text/plain;charset=utf-8'});
         const existing=await findDriveFile(fileName,folderId,'text/plain');
         const uploaded=await uploadDriveMultipart({name:fileName,blob:textBlob,parentId:folderId,fileId:existing?.id||null,mimeType:'text/plain'});
-        indexTabs.push({...tab,noteFileName:fileName,noteFileId:uploaded.id});
-      }
+        return {...tab,noteFileName:fileName,noteFileId:uploaded.id};
+      }));
       const files=await listDriveFilesInFolder(folderId);
-      for(const f of files){
+      await Promise.all(files.map(async(f)=>{
         if(String(f.name||'').toLowerCase().endsWith('.txt') && !expectedNames.has(f.name)){
           await deleteDriveFile(f.id);
         }
-      }
+      }));
       const index={
         version:1,
         updatedAt:notesPart.updatedAt||new Date().toISOString(),
@@ -421,10 +422,10 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         notesTabList:indexTabs
       };
       await saveJsonToDrive(systemFolderId,DRIVE_NOTES_FILE,index);
-      for(const legacyName of [DRIVE_NOTES_FILE, DRIVE_OLD_NOTES_FILE]){
+      await Promise.all([DRIVE_NOTES_FILE, DRIVE_OLD_NOTES_FILE].map(async(legacyName)=>{
         const legacy=await findDriveFile(legacyName,folderId,'application/json');
         if(legacy) await deleteDriveFile(legacy.id);
-      }
+      }));
       return index;
     }
 
@@ -469,10 +470,12 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       const legacyCalendar=await getLegacyDriveFolder(DRIVE_CALENDAR_FOLDER);
       const legacyWorkmusic=await getLegacyDriveFolder(DRIVE_WORKMUSIC_FOLDER);
       const legacyClipviewer=await getLegacyDriveFolder(DRIVE_CLIP_FOLDER);
-      await deleteJsonIfExists(legacyCalendar?.id,DRIVE_CALENDAR_FILE);
-      await deleteJsonIfExists(folders.bookmarks.id,DRIVE_BOOKMARKS_FILE);
-      await deleteJsonIfExists(legacyWorkmusic?.id,DRIVE_WORKMUSIC_FILE);
-      await deleteJsonIfExists(legacyClipviewer?.id,DRIVE_CLIP_FILE);
+      await Promise.all([
+        deleteJsonIfExists(legacyCalendar?.id,DRIVE_CALENDAR_FILE),
+        deleteJsonIfExists(folders.bookmarks.id,DRIVE_BOOKMARKS_FILE),
+        deleteJsonIfExists(legacyWorkmusic?.id,DRIVE_WORKMUSIC_FILE),
+        deleteJsonIfExists(legacyClipviewer?.id,DRIVE_CLIP_FILE)
+      ]);
     }
 
     async function saveAppDataNow(){
@@ -483,11 +486,13 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         const data=buildAppData();
         currentAppData=data;
         const parts=splitAppDataForDrive(data);
-        await saveJsonToDrive(folders.system.id,DRIVE_CALENDAR_FILE,parts.calendar);
-        await saveNotesToDrive(folders.notes.id,folders.system.id,parts.notes);
-        await saveJsonToDrive(folders.system.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks);
-        await saveJsonToDrive(folders.system.id,DRIVE_WORKMUSIC_FILE,parts.workmusic);
-        await saveJsonToDrive(folders.system.id,DRIVE_CLIP_FILE,parts.clipviewer);
+        await Promise.all([
+          saveJsonToDrive(folders.system.id,DRIVE_CALENDAR_FILE,parts.calendar),
+          saveNotesToDrive(folders.notes.id,folders.system.id,parts.notes),
+          saveJsonToDrive(folders.system.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks),
+          saveJsonToDrive(folders.system.id,DRIVE_WORKMUSIC_FILE,parts.workmusic),
+          saveJsonToDrive(folders.system.id,DRIVE_CLIP_FILE,parts.clipviewer)
+        ]);
         await cleanupLegacyJsonFiles();
         setDriveStatus('Google Drive 저장 완료');
       }catch(e){
@@ -504,15 +509,33 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         const data=buildAppData();
         currentAppData=data;
         const parts=splitAppDataForDrive(data);
-        await saveJsonToDrive(folders.system.id,DRIVE_CALENDAR_FILE,parts.calendar);
-        await saveJsonToDrive(folders.system.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks);
-        await saveJsonToDrive(folders.system.id,DRIVE_WORKMUSIC_FILE,parts.workmusic);
-        await saveJsonToDrive(folders.system.id,DRIVE_CLIP_FILE,parts.clipviewer);
+        await Promise.all([
+          saveJsonToDrive(folders.system.id,DRIVE_CALENDAR_FILE,parts.calendar),
+          saveJsonToDrive(folders.system.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks),
+          saveJsonToDrive(folders.system.id,DRIVE_WORKMUSIC_FILE,parts.workmusic),
+          saveJsonToDrive(folders.system.id,DRIVE_CLIP_FILE,parts.clipviewer)
+        ]);
         await cleanupLegacyJsonFiles();
         setDriveStatus('Google Drive 저장 완료');
       }catch(e){
         console.error(e);
         setDriveStatus('Drive 저장 실패', true);
+        throw e;
+      }
+    }
+    async function saveNotesDataNow(){
+      if(!driveReady || !driveAccessToken) return;
+      setDriveBusy('메모 Drive 저장 중...');
+      try{
+        const folders=await ensureDriveFolders();
+        const data=buildAppData();
+        currentAppData=data;
+        const parts=splitAppDataForDrive(data);
+        await saveNotesToDrive(folders.notes.id,folders.system.id,parts.notes);
+        setDriveStatus('메모 Drive 저장 완료');
+      }catch(e){
+        console.error(e);
+        setDriveStatus('메모 저장 실패', true);
         throw e;
       }
     }
@@ -526,13 +549,19 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     function scheduleSaveNonNotesData(){
       clearTimeout(driveSaveTimer);
       setDriveStatus('로컬 반영됨 · Drive 저장 예약됨');
-      driveSaveTimer=setTimeout(()=>queueDriveSave(saveNonNotesDataNow).catch(e=>console.error(e)),700);
+      driveSaveTimer=setTimeout(()=>queueDriveSave(saveNonNotesDataNow).catch(e=>console.error(e)),NON_NOTES_SAVE_DELAY_MS);
     }
 
     function scheduleSaveAppData(){
       clearTimeout(driveSaveTimer);
       setDriveStatus('저장 예약됨');
-      driveSaveTimer=setTimeout(()=>queueDriveSave(saveAppDataNow).catch(e=>console.error(e)),900);
+      driveSaveTimer=setTimeout(()=>queueDriveSave(saveAppDataNow).catch(e=>console.error(e)),SAVE_DELAY_MS);
+    }
+
+    function scheduleSaveNotesData(){
+      clearTimeout(driveSaveTimer);
+      setDriveStatus('메모 저장 예약됨');
+      driveSaveTimer=setTimeout(()=>queueDriveSave(saveNotesDataNow).catch(e=>console.error(e)),SAVE_DELAY_MS);
     }
 
     async function loadAppDataFromDrive(){
@@ -624,7 +653,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       notesTimer=setTimeout(()=>{
         if(notesPending){ window.cloudSaveNotesFor(notesPending.tabId,notesPending.value); notesPending=null; }
         else window.cloudSaveNotes();
-      },800);
+      },NOTES_INPUT_DELAY_MS);
     };
     window.cloudSaveAll=async()=>{ if(!ensureLogin()) return; scheduleSaveNonNotesData(); };
     window.cloudSaveStateOnly=async()=>{ if(!ensureLogin()) return; scheduleSaveNonNotesData(); };
@@ -643,7 +672,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     window.cloudSaveNotes=async(tabIdArg,valueArg)=>{
       if(!ensureLogin()) return;
       writeNoteToState(tabIdArg,valueArg);
-      scheduleSaveAppData();
+      scheduleSaveNotesData();
     };
     window.cloudSaveNotesFor=(tabId,value)=>window.cloudSaveNotes(tabId,value);
     window.cloudSaveNotesNow=async(tabId,value)=>{
@@ -654,13 +683,13 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         clearTimeout(notesTimer);
       }
       clearTimeout(driveSaveTimer);
-      await queueDriveSave(saveAppDataNow);
+      await queueDriveSave(saveNotesDataNow);
     };
-    window.cloudSetActiveNotesTab=async(tabId)=>{ window.__notesActiveTabId=tabId; scheduleSaveAppData(); };
-    window.cloudAddNotesTab=async({id,name})=>{ const list=window.__notesTabList||[]; const max=list.reduce((m,t)=>Math.max(m,Number(t.order||0)),0); window.__notesTabList=[...list,{id,name,order:max+10}]; window.__notesActiveTabId=id; window.__notesTabs=window.__notesTabs||{}; window.__notesTabs[id]=''; renderEverything(); scheduleSaveAppData(); };
-    window.cloudRenameNotesTab=async(tabId,newName)=>{ window.__notesTabList=(window.__notesTabList||[]).map(t=>t.id===tabId?{...t,name:newName}:t); renderEverything(); scheduleSaveAppData(); };
-    window.cloudReorderNotesTabs=async(list)=>{ window.__notesTabList=list; renderEverything(); scheduleSaveAppData(); };
-    window.cloudDeleteNotesTab=async(tabId)=>{ let list=(window.__notesTabList||[]).filter(t=>t.id!==tabId); window.__notesTabs=window.__notesTabs||{}; delete window.__notesTabs[tabId]; if(!list.length) list=[{id:'memo',name:'메모',order:0}]; window.__notesTabList=list; if(window.__notesActiveTabId===tabId) window.__notesActiveTabId=list[0].id; renderEverything(); scheduleSaveAppData(); };
+    window.cloudSetActiveNotesTab=async(tabId)=>{ window.__notesActiveTabId=tabId; scheduleSaveNotesData(); };
+    window.cloudAddNotesTab=async({id,name})=>{ const list=window.__notesTabList||[]; const max=list.reduce((m,t)=>Math.max(m,Number(t.order||0)),0); window.__notesTabList=[...list,{id,name,order:max+10}]; window.__notesActiveTabId=id; window.__notesTabs=window.__notesTabs||{}; window.__notesTabs[id]=''; renderEverything(); scheduleSaveNotesData(); };
+    window.cloudRenameNotesTab=async(tabId,newName)=>{ window.__notesTabList=(window.__notesTabList||[]).map(t=>t.id===tabId?{...t,name:newName}:t); renderEverything(); scheduleSaveNotesData(); };
+    window.cloudReorderNotesTabs=async(list)=>{ window.__notesTabList=list; renderEverything(); scheduleSaveNotesData(); };
+    window.cloudDeleteNotesTab=async(tabId)=>{ let list=(window.__notesTabList||[]).filter(t=>t.id!==tabId); window.__notesTabs=window.__notesTabs||{}; delete window.__notesTabs[tabId]; if(!list.length) list=[{id:'memo',name:'메모',order:0}]; window.__notesTabList=list; if(window.__notesActiveTabId===tabId) window.__notesActiveTabId=list[0].id; renderEverything(); scheduleSaveNotesData(); };
 
     window.cloudSetActiveBookmarkTab=async(tabId)=>{ window.__bookmarkActiveTabId=tabId||'default'; renderEverything(); scheduleSaveNonNotesData(); };
     window.cloudAddBookmarkTab=async({id,name})=>{ const list=window.__bookmarkTabList||[{id:'default',name:'기본',order:0}]; const max=list.reduce((m,t)=>Math.max(m,Number(t.order||0)),0); window.__bookmarkTabList=[...list,{id,name,order:max+10}]; window.__bookmarkActiveTabId=id; renderEverything(); scheduleSaveNonNotesData(); };
