@@ -4,62 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>만화 일정 관리</title>
-  <script src="https://cdn.tailwindcss.com">function formatTabFolderName(tab, index=0){
-  const n = String((index ?? 0) + 1).padStart(3, "0");
-  const name = sanitizeDriveName((tab && tab.name) || "기본");
-  return `${n}_${name}`;
-}
-function makeDriveTimestampName(ext="png"){
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth()+1).padStart(2,"0");
-  const dd = String(d.getDate()).padStart(2,"0");
-  const hh = String(d.getHours()).padStart(2,"0");
-  const mi = String(d.getMinutes()).padStart(2,"0");
-  const ss = String(d.getSeconds()).padStart(2,"0");
-  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}.${String(ext||"png").replace(/^\./,"")}`;
-}
-function makeSimpleDateTimeImageName(ext="png"){
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth()+1).padStart(2,"0");
-  const dd = String(d.getDate()).padStart(2,"0");
-  const hh = String(d.getHours()).padStart(2,"0");
-  const mi = String(d.getMinutes()).padStart(2,"0");
-  const ss = String(d.getSeconds()).padStart(2,"0");
-  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}.${String(ext||"png").replace(/^\./,"")}`;
-}
-
-/* === 북마크 Drive 정리 규칙 ===
-   북마크/
-     001_기본/
-       20260617_143744.png
-     002_자료/
-       20260617_144010.png
-*/
-function getOrderedBookmarkTabsForDrive(){
-  const tabs = [...(window.__bookmarkTabList || [{id:"default", name:"기본", order:0}])];
-  return tabs.sort((a,b)=>(a.order??0)-(b.order??0));
-}
-function getBookmarkTabDriveFolderName(tabId){
-  const tabs = getOrderedBookmarkTabsForDrive();
-  let idx = tabs.findIndex(t=>t.id===tabId);
-  if(idx < 0) idx = 0;
-  const tab = tabs[idx] || {name:"기본"};
-  return `${String(idx+1).padStart(3,"0")}_${sanitizeDriveName(tab.name || "기본")}`;
-}
-function makeBookmarkImageDriveFileName(ext="png"){
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth()+1).padStart(2,"0");
-  const dd = String(d.getDate()).padStart(2,"0");
-  const hh = String(d.getHours()).padStart(2,"0");
-  const mi = String(d.getMinutes()).padStart(2,"0");
-  const ss = String(d.getSeconds()).padStart(2,"0");
-  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}.${String(ext||"png").replace(/^\\./,"")}`;
-}
-
-</script>
+  <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght400;700&display=swap" rel="stylesheet"/>
   <style>
     body{font-family:'Noto Sans KR',sans-serif;background:#000;color:#fff;display:flex;justify-content:flex-start;align-items:center;min-height:100vh;padding:16px;flex-direction:column;gap:0}
@@ -3792,7 +3737,7 @@ function initBookmarks(){
     const DRIVE_CALENDAR_FOLDER = '달력';
     const DRIVE_NOTES_FOLDER = '메모';
     const DRIVE_BOOKMARKS_FOLDER = '북마크';
-    const DRIVE_BOOKMARK_IMAGES_FOLDER = '이미지';
+    const DRIVE_BOOKMARK_IMAGES_FOLDER = ''; // 북마크 이미지 중간 폴더 사용 안 함
     const DRIVE_WORKMUSIC_FOLDER = '노동요';
     const DRIVE_CLIP_FOLDER = '클립뷰어';
     const DRIVE_CLIP_CURRENT_FOLDER = 'current';
@@ -4009,7 +3954,8 @@ function initBookmarks(){
     function pad3(n){ return String(n).padStart(3,'0'); }
     function formatDriveFileTime(ms=Date.now()){
       const d=new Date(ms);
-      return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}_${String(d.getMilliseconds()).padStart(3,'0')}`;
+      // 보기 좋게 날짜_시간까지만 사용
+      return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
     }
     function fileExtFromBlob(file){
       const name=(file && file.name) ? String(file.name) : '';
@@ -4026,8 +3972,8 @@ function initBookmarks(){
       return `${pad3(order)}_${makeSafeDriveName(tab?.name||tab?.id||'메모')}.txt`;
     }
     function getBookmarkTabFolderName(tab,idx=0){
-      const order=Number.isFinite(Number(tab?.order)) ? Number(tab.order) : idx*10;
-      return `${pad3(order)}_${makeSafeDriveName(tab?.name||tab?.id||'북마크')}`;
+      // Drive에서 보기 쉽게 탭 순서대로 001_기본, 002_자료 형식
+      return `${pad3(idx+1)}_${makeSafeDriveName(tab?.name||tab?.id||'북마크')}`;
     }
     async function findDriveFile(name,parentId=null,mimeType=null){
       const q=[`name='${qEscape(name)}'`,'trashed=false'];
@@ -4061,7 +4007,8 @@ function initBookmarks(){
       const calendar=await getOrCreateDriveFolder(DRIVE_CALENDAR_FOLDER,app.id);
       const notes=await getOrCreateDriveFolder(DRIVE_NOTES_FOLDER,app.id);
       const bookmarks=await getOrCreateDriveFolder(DRIVE_BOOKMARKS_FOLDER,app.id);
-      const bookmarkImages=await getOrCreateDriveFolder(DRIVE_BOOKMARK_IMAGES_FOLDER,bookmarks.id);
+      // 북마크 이미지는 중간 '이미지' 폴더 없이 북마크 폴더 바로 아래 탭별 폴더에 저장
+      const bookmarkImages=bookmarks;
       const workmusic=await getOrCreateDriveFolder(DRIVE_WORKMUSIC_FOLDER,app.id);
       const clipviewer=await getOrCreateDriveFolder(DRIVE_CLIP_FOLDER,app.id);
       const clipCurrent=await getOrCreateDriveFolder(DRIVE_CLIP_CURRENT_FOLDER,clipviewer.id);
@@ -4077,7 +4024,7 @@ function initBookmarks(){
       if(idx<0) idx=0;
       const tab=tabs[idx] || {id:'default',name:'기본',order:0};
       const folderName=getBookmarkTabFolderName(tab,idx);
-      return await getOrCreateDriveFolder(folderName,folders.bookmarkImages.id);
+      return await getOrCreateDriveFolder(folderName,folders.bookmarks.id);
     }
 
     async function uploadDriveMultipart({name,blob,parentId,fileId=null,mimeType='application/octet-stream'}){
@@ -4357,7 +4304,7 @@ function initBookmarks(){
         parentId=tabFolder.id;
       }
       const ext=fileExtFromBlob(file);
-      const name=`${formatDriveFileTime(ms)}_${makeSafeDriveName(namePrefix,'bookmark')}${ext}`;
+      const name=`${formatDriveFileTime(ms)}${ext}`;
       const uploaded=await uploadDriveMultipart({name,blob:file,parentId,mimeType:file.type||'image/png'});
       uploaded.createdName=name;
       uploaded.createdMs=ms;
