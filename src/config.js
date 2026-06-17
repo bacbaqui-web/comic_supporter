@@ -6,6 +6,7 @@
       scope: 'https://www.googleapis.com/auth/drive.file',
       folders: {
         app: '코믹서포터',
+        system: 'system',
         calendar: '달력',
         notes: '메모',
         bookmarks: '북마크',

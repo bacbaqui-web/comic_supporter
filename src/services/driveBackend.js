@@ -8,6 +8,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     const DRIVE_FILES = DRIVE_CONFIG.files || {};
     const DRIVE_SCOPE = DRIVE_CONFIG.scope || 'https://www.googleapis.com/auth/drive.file';
     const DRIVE_APP_FOLDER = DRIVE_FOLDERS.app || '코믹서포터';
+    const DRIVE_SYSTEM_FOLDER = DRIVE_FOLDERS.system || 'system';
     const DRIVE_CALENDAR_FOLDER = DRIVE_FOLDERS.calendar || '달력';
     const DRIVE_NOTES_FOLDER = DRIVE_FOLDERS.notes || '메모';
     const DRIVE_BOOKMARKS_FOLDER = DRIVE_FOLDERS.bookmarks || '북마크';
@@ -273,20 +274,26 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     async function getOrCreateDriveFolder(name,parentId=null){
       return await findDriveFile(name,parentId,'application/vnd.google-apps.folder') || await createDriveFolder(name,parentId);
     }
+    async function findDriveFolder(name,parentId=null){
+      return await findDriveFile(name,parentId,'application/vnd.google-apps.folder');
+    }
 
     async function ensureDriveFolders(){
       if(driveFolders) return driveFolders;
       const app=await getOrCreateDriveFolder(DRIVE_APP_FOLDER);
-      const calendar=await getOrCreateDriveFolder(DRIVE_CALENDAR_FOLDER,app.id);
+      const system=await getOrCreateDriveFolder(DRIVE_SYSTEM_FOLDER,app.id);
       const notes=await getOrCreateDriveFolder(DRIVE_NOTES_FOLDER,app.id);
       const bookmarks=await getOrCreateDriveFolder(DRIVE_BOOKMARKS_FOLDER,app.id);
       // 북마크 이미지는 중간 '이미지' 폴더 없이 북마크 폴더 바로 아래 탭별 폴더에 저장
       const bookmarkImages=bookmarks;
-      const workmusic=await getOrCreateDriveFolder(DRIVE_WORKMUSIC_FOLDER,app.id);
-      const clipviewer=await getOrCreateDriveFolder(DRIVE_CLIP_FOLDER,app.id);
-      const clipCurrent=await getOrCreateDriveFolder(DRIVE_CLIP_CURRENT_FOLDER,clipviewer.id);
-      driveFolders={app,calendar,notes,bookmarks,bookmarkImages,workmusic,clipviewer,clipCurrent};
+      const clipCurrent=await getOrCreateDriveFolder(DRIVE_CLIP_CURRENT_FOLDER,system.id);
+      driveFolders={app,system,notes,bookmarks,bookmarkImages,clipCurrent};
       return driveFolders;
+    }
+
+    async function getLegacyDriveFolder(name){
+      const folders=await ensureDriveFolders();
+      return await findDriveFolder(name,folders.app.id);
     }
 
     async function getBookmarkTabDriveFolder(tabId){
@@ -358,7 +365,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       try{ return JSON.parse(await downloadDriveText(file.id)); }catch(e){ console.warn('JSON load failed',fileName,e); return null; }
     }
 
-    async function saveNotesToDrive(folderId,notesPart){
+    async function saveNotesToDrive(folderId,systemFolderId,notesPart){
       notesPart=notesPart||{};
       const tabs=[...(notesPart.notesTabList||[{id:'memo',name:'메모',order:0}])]
         .sort((a,b)=>(Number(a.order||0)-Number(b.order||0)));
@@ -386,12 +393,16 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         notesActiveTabId:notesPart.notesActiveTabId||tabs[0]?.id||'memo',
         notesTabList:indexTabs
       };
-      await saveJsonToDrive(folderId,DRIVE_NOTES_FILE,index);
+      await saveJsonToDrive(systemFolderId,DRIVE_NOTES_FILE,index);
+      for(const legacyName of [DRIVE_NOTES_FILE, DRIVE_OLD_NOTES_FILE]){
+        const legacy=await findDriveFile(legacyName,folderId,'application/json');
+        if(legacy) await deleteDriveFile(legacy.id);
+      }
       return index;
     }
 
-    async function loadNotesFromDrive(folderId){
-      const index=await loadJsonFromDrive(folderId,DRIVE_NOTES_FILE);
+    async function loadNotesFromDrive(folderId,systemFolderId){
+      const index=await loadJsonFromDrive(systemFolderId,DRIVE_NOTES_FILE) || await loadJsonFromDrive(folderId,DRIVE_NOTES_FILE);
       if(index && Array.isArray(index.notesTabList)){
         const notesTabs={};
         const notesTabList=index.notesTabList.map(({noteFileName,noteFileId,...tab})=>tab);
@@ -414,10 +425,27 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         };
       }
 
-      const old=await loadJsonFromDrive(folderId,DRIVE_OLD_NOTES_FILE);
+      const old=await loadJsonFromDrive(systemFolderId,DRIVE_OLD_NOTES_FILE) || await loadJsonFromDrive(folderId,DRIVE_OLD_NOTES_FILE);
       if(old) return old;
 
       return null;
+    }
+
+    async function deleteJsonIfExists(folderId,fileName){
+      if(!folderId) return;
+      const file=await findDriveFile(fileName,folderId,'application/json');
+      if(file) await deleteDriveFile(file.id);
+    }
+
+    async function cleanupLegacyJsonFiles(){
+      const folders=await ensureDriveFolders();
+      const legacyCalendar=await getLegacyDriveFolder(DRIVE_CALENDAR_FOLDER);
+      const legacyWorkmusic=await getLegacyDriveFolder(DRIVE_WORKMUSIC_FOLDER);
+      const legacyClipviewer=await getLegacyDriveFolder(DRIVE_CLIP_FOLDER);
+      await deleteJsonIfExists(legacyCalendar?.id,DRIVE_CALENDAR_FILE);
+      await deleteJsonIfExists(folders.bookmarks.id,DRIVE_BOOKMARKS_FILE);
+      await deleteJsonIfExists(legacyWorkmusic?.id,DRIVE_WORKMUSIC_FILE);
+      await deleteJsonIfExists(legacyClipviewer?.id,DRIVE_CLIP_FILE);
     }
 
     async function saveAppDataNow(){
@@ -428,11 +456,12 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         const data=buildAppData();
         currentAppData=data;
         const parts=splitAppDataForDrive(data);
-        await saveJsonToDrive(folders.calendar.id,DRIVE_CALENDAR_FILE,parts.calendar);
-        await saveNotesToDrive(folders.notes.id,parts.notes);
-        await saveJsonToDrive(folders.bookmarks.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks);
-        await saveJsonToDrive(folders.workmusic.id,DRIVE_WORKMUSIC_FILE,parts.workmusic);
-        await saveJsonToDrive(folders.clipviewer.id,DRIVE_CLIP_FILE,parts.clipviewer);
+        await saveJsonToDrive(folders.system.id,DRIVE_CALENDAR_FILE,parts.calendar);
+        await saveNotesToDrive(folders.notes.id,folders.system.id,parts.notes);
+        await saveJsonToDrive(folders.system.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks);
+        await saveJsonToDrive(folders.system.id,DRIVE_WORKMUSIC_FILE,parts.workmusic);
+        await saveJsonToDrive(folders.system.id,DRIVE_CLIP_FILE,parts.clipviewer);
+        await cleanupLegacyJsonFiles();
         setDriveStatus('Google Drive 저장 완료');
       }catch(e){
         console.error(e);
@@ -448,10 +477,11 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         const data=buildAppData();
         currentAppData=data;
         const parts=splitAppDataForDrive(data);
-        await saveJsonToDrive(folders.calendar.id,DRIVE_CALENDAR_FILE,parts.calendar);
-        await saveJsonToDrive(folders.bookmarks.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks);
-        await saveJsonToDrive(folders.workmusic.id,DRIVE_WORKMUSIC_FILE,parts.workmusic);
-        await saveJsonToDrive(folders.clipviewer.id,DRIVE_CLIP_FILE,parts.clipviewer);
+        await saveJsonToDrive(folders.system.id,DRIVE_CALENDAR_FILE,parts.calendar);
+        await saveJsonToDrive(folders.system.id,DRIVE_BOOKMARKS_FILE,parts.bookmarks);
+        await saveJsonToDrive(folders.system.id,DRIVE_WORKMUSIC_FILE,parts.workmusic);
+        await saveJsonToDrive(folders.system.id,DRIVE_CLIP_FILE,parts.clipviewer);
+        await cleanupLegacyJsonFiles();
         setDriveStatus('Google Drive 저장 완료');
       }catch(e){
         console.error(e);
@@ -473,12 +503,16 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
 
     async function loadAppDataFromDrive(){
       const folders=await ensureDriveFolders();
+      const legacyCalendar=await getLegacyDriveFolder(DRIVE_CALENDAR_FOLDER);
+      const legacyBookmarks=await getLegacyDriveFolder(DRIVE_BOOKMARKS_FOLDER);
+      const legacyWorkmusic=await getLegacyDriveFolder(DRIVE_WORKMUSIC_FOLDER);
+      const legacyClipviewer=await getLegacyDriveFolder(DRIVE_CLIP_FOLDER);
       const parts={
-        calendar:await loadJsonFromDrive(folders.calendar.id,DRIVE_CALENDAR_FILE),
-        notes:await loadNotesFromDrive(folders.notes.id),
-        bookmarks:await loadJsonFromDrive(folders.bookmarks.id,DRIVE_BOOKMARKS_FILE),
-        workmusic:await loadJsonFromDrive(folders.workmusic.id,DRIVE_WORKMUSIC_FILE),
-        clipviewer:await loadJsonFromDrive(folders.clipviewer.id,DRIVE_CLIP_FILE)
+        calendar:await loadJsonFromDrive(folders.system.id,DRIVE_CALENDAR_FILE) || (legacyCalendar ? await loadJsonFromDrive(legacyCalendar.id,DRIVE_CALENDAR_FILE) : null),
+        notes:await loadNotesFromDrive(folders.notes.id,folders.system.id),
+        bookmarks:await loadJsonFromDrive(folders.system.id,DRIVE_BOOKMARKS_FILE) || (legacyBookmarks ? await loadJsonFromDrive(legacyBookmarks.id,DRIVE_BOOKMARKS_FILE) : null),
+        workmusic:await loadJsonFromDrive(folders.system.id,DRIVE_WORKMUSIC_FILE) || (legacyWorkmusic ? await loadJsonFromDrive(legacyWorkmusic.id,DRIVE_WORKMUSIC_FILE) : null),
+        clipviewer:await loadJsonFromDrive(folders.system.id,DRIVE_CLIP_FILE) || (legacyClipviewer ? await loadJsonFromDrive(legacyClipviewer.id,DRIVE_CLIP_FILE) : null)
       };
       const hasAny=Object.values(parts).some(Boolean);
       if(!hasAny){
