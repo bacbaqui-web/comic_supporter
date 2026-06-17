@@ -541,6 +541,7 @@ body{padding-bottom:76px}
 .clip-viewer{width:690px;max-width:100vw;line-height:0;background:#111;margin:0 auto;border-radius:10px;overflow:hidden}
 .clip-page{width:690px;max-width:100vw;height:auto;display:block;margin:0 auto;background:#222}
 .clip-message{width:100%;min-height:260px;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;text-align:center;color:#888;line-height:1.6;background:linear-gradient(145deg,#1b1b1b,#151515);border:1px dashed #555;border-radius:12px;padding:28px}
+.clip-message.drag-over,.clip-viewer.drag-over{border-color:#e5e5e5;background:linear-gradient(145deg,#252525,#171717);box-shadow:0 0 0 3px rgba(255,255,255,.08),0 18px 40px rgba(0,0,0,.35)}
 .clip-empty-title{color:#f4f4f4;font-size:1.05rem;font-weight:900;letter-spacing:-.01em}
 .clip-empty-body{max-width:360px;color:#a9a9a9;font-size:.9rem}
 .clip-status{font-size:.78rem;color:#bbb;line-height:1.45;text-align:center;white-space:pre-wrap}

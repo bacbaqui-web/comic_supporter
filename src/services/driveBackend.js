@@ -651,7 +651,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       window.customTasks=[]; window.taskStatus={}; window.imageBookmarks=[]; window.__notesTabs={}; window.__notesTabList=[{id:'memo',name:'메모',order:0}]; window.__notesActiveTabId='memo'; window.__bookmarkTabList=[{id:'default',name:'기본',order:0}]; window.__bookmarkActiveTabId='default'; window.__workMusicTabList=[{id:'default',name:'기본',order:0}]; window.__workMusicActiveTabId='default'; window.workMusicSongs=[];
       renderEverything();
       if(typeof clearClipLocal==='function') clearClipLocal();
-      window.showClipMessage?.('<div class="clip-empty-title">CLIP 폴더를 열어주세요</div><div class="clip-empty-body">원고가 들어있는 폴더를 선택하면 페이지 미리보기를 바로 펼쳐볼 수 있습니다.</div>');
+      window.showClipMessage?.('<div class="clip-empty-title">CLIP 폴더를 열어주세요</div><div class="clip-empty-body">원고가 들어있는 폴더를 이곳에 끌어다 놓거나, 위의 폴더 아이콘으로 선택하면 미리보기를 펼쳐볼 수 있습니다.</div>');
       window.setClipStatus?.('');
     };
 

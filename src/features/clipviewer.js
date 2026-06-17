@@ -20,7 +20,7 @@ export function initClipViewer({
   let clipSQLPromise=null;
   const EMPTY_CLIP_MESSAGE = `
     <div class="clip-empty-title">CLIP 폴더를 열어주세요</div>
-    <div class="clip-empty-body">원고가 들어있는 폴더를 선택하면 페이지 미리보기를 바로 펼쳐볼 수 있습니다.</div>
+    <div class="clip-empty-body">원고가 들어있는 폴더를 이곳에 끌어다 놓거나, 위의 폴더 아이콘으로 선택하면 미리보기를 펼쳐볼 수 있습니다.</div>
   `;
 
   function setClipStatus(t){ if(clipStatus) clipStatus.textContent=t; }
@@ -60,6 +60,89 @@ export function initClipViewer({
     if(ok){ hideClipMessage(); setClipStatus(`완료\n표시: ${ok}개 / 실패: ${fail}개`); } else { showClipMessage('미리보기 이미지를 찾지 못했습니다.'); setClipStatus(`실패: ${fail}개`); }
   }
 
+  function readDirectoryEntries(reader){
+    return new Promise((resolve,reject)=>{
+      const entries=[];
+      const readBatch=()=>{
+        reader.readEntries((batch)=>{
+          if(!batch.length){ resolve(entries); return; }
+          entries.push(...batch);
+          readBatch();
+        },reject);
+      };
+      readBatch();
+    });
+  }
+
+  async function collectEntryFiles(entry,path=''){
+    if(entry.isFile){
+      return await new Promise((resolve,reject)=>{
+        entry.file((file)=>{
+          try{
+            Object.defineProperty(file,'webkitRelativePath',{value:path+file.name,configurable:true});
+          }catch(_){}
+          resolve([file]);
+        },reject);
+      });
+    }
+    if(entry.isDirectory){
+      const entries=await readDirectoryEntries(entry.createReader());
+      const nested=await Promise.all(entries.map(child=>collectEntryFiles(child,path+entry.name+'/')));
+      return nested.flat();
+    }
+    return [];
+  }
+
+  async function getDroppedClipFiles(dataTransfer){
+    const items=[...(dataTransfer?.items||[])];
+    if(items.length){
+      const entries=items.map(item=>item.webkitGetAsEntry?.()).filter(Boolean);
+      if(entries.length){
+        const nested=await Promise.all(entries.map(entry=>collectEntryFiles(entry)));
+        return nested.flat();
+      }
+    }
+    return [...(dataTransfer?.files||[])];
+  }
+
+  function setClipDropActive(active){
+    clipMessage?.classList.toggle('drag-over',active);
+    clipViewer?.classList.toggle('drag-over',active);
+  }
+
+  function attachClipDropZone(el){
+    if(!el) return;
+    el.addEventListener('dragover',(e)=>{
+      e.preventDefault();
+      if(e.dataTransfer) e.dataTransfer.dropEffect='copy';
+      setClipDropActive(true);
+    });
+    el.addEventListener('dragleave',(e)=>{
+      if(el.contains(e.relatedTarget)) return;
+      setClipDropActive(false);
+    });
+    el.addEventListener('drop',async(e)=>{
+      e.preventDefault();
+      setClipDropActive(false);
+      try{
+        const files=await getDroppedClipFiles(e.dataTransfer);
+        const clipList=files.filter(file=>file.name?.toLowerCase().endsWith('.clip'));
+        if(!clipList.length){
+          showClipMessage('드롭한 폴더에서 .clip 파일을 찾지 못했습니다.');
+          setClipStatus('실패: .clip 없음');
+          return;
+        }
+        clipFiles=clipList;
+        if(clipFolderInput) clipFolderInput.value='';
+        await loadClipFiles(clipFiles);
+      }catch(err){
+        console.error(err);
+        showClipMessage('이 브라우저에서는 폴더 드롭을 읽지 못했습니다. 위의 폴더 아이콘으로 열어주세요.');
+        setClipStatus('폴더 드롭 실패');
+      }
+    });
+  }
+
   async function uploadClipPagesToDrive(){
     if(!ensureLogin()) return;
     if(!clipLocalPages.length){ setClipStatus('먼저 CLIP 폴더를 열어주세요.'); return; }
@@ -91,6 +174,8 @@ export function initClipViewer({
   clipFolderInput?.addEventListener('change',async(e)=>{ clipFiles=Array.from(e.target.files||[]); await loadClipFiles(clipFiles); });
   clipRefreshBtn?.addEventListener('click',async()=>{ if(!clipFiles.length){ setClipStatus('먼저 CLIP 폴더를 열어주세요.'); return; } await loadClipFiles(clipFiles); });
   clipClearBtn?.addEventListener('click',()=>{ clipFiles=[]; if(clipFolderInput) clipFolderInput.value=''; clearClipLocal(); showClipMessage(EMPTY_CLIP_MESSAGE); setClipStatus(''); });
+  attachClipDropZone(clipMessage);
+  attachClipDropZone(clipViewer);
 
   window.setClipStatus = setClipStatus;
   window.showClipMessage = showClipMessage;
