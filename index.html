@@ -384,7 +384,19 @@
     document.getElementById('backupNotesBtn')?.addEventListener('click',()=>window.downloadAllNotesBackup?.());
     document.getElementById('backupAllDataBtn')?.addEventListener('click',()=>window.downloadAppDataBackup?.());
 
-    function showTab(tabId){
+    async function showTab(tabId){
+      if(window.waitForFeatureData){
+        const waiting = window.waitForFeatureData(tabId);
+        if(waiting){
+          document.getElementById('loading-overlay')?.classList.remove('hidden');
+          try{ await waiting; }
+          catch(err){
+            console.error(err);
+            window.showAlert?.('데이터를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
+          }
+          finally{ document.getElementById('loading-overlay')?.classList.add('hidden'); }
+        }
+      }
       tabContents.forEach(c=>c.classList.remove('active'));
       tabButtons.forEach(b=>b.classList.remove('active'));
       document.getElementById(`${tabId}-section`).classList.add('active');

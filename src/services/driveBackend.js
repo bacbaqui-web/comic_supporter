@@ -48,6 +48,10 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     let notesSaveRunPromise=null;
     let notesSaveQueued=false;
     let driveImageUrlCache=new Map();
+    let deferredAppDataPromise=null;
+    let deferredAppDataLoaded=false;
+    let deferredAppDataError=null;
+    let clipPagesRendered=false;
     window.__unsubs=[];
 
     function getGoogleClientId(){
@@ -684,6 +688,46 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       await window.loadClipPagesFromDrive?.(false);
     }
 
+    async function getDriveLoadFolders(){
+      const folders=await ensureDriveFolders();
+      const [legacyCalendar,legacyBookmarks,legacyWorkmusic,legacyClipviewer]=await Promise.all([
+        getLegacyDriveFolder(DRIVE_CALENDAR_FOLDER),
+        getLegacyDriveFolder(DRIVE_BOOKMARKS_FOLDER),
+        getLegacyDriveFolder(DRIVE_WORKMUSIC_FOLDER),
+        getLegacyDriveFolder(DRIVE_CLIP_FOLDER)
+      ]);
+      return {folders,legacyCalendar,legacyBookmarks,legacyWorkmusic,legacyClipviewer};
+    }
+
+    async function loadCalendarPartFromDrive(){
+      const {folders,legacyCalendar}=await getDriveLoadFolders();
+      const calendar=await loadJsonFromDrive(folders.system.id,DRIVE_CALENDAR_FILE) || (legacyCalendar ? await loadJsonFromDrive(legacyCalendar.id,DRIVE_CALENDAR_FILE) : null);
+      if(calendar){
+        window.customTasks=calendar.customTasks||[];
+        window.taskStatus=calendar.taskStatus||{};
+        currentAppData.customTasks=window.customTasks;
+        currentAppData.state=currentAppData.state||{};
+        currentAppData.state.taskStatus=window.taskStatus;
+      }
+      return {folders,legacyCalendar,calendar};
+    }
+
+    async function loadDeferredAppDataFromDrive(){
+      const {folders,legacyBookmarks,legacyWorkmusic,legacyClipviewer}=await getDriveLoadFolders();
+      const parts={
+        calendar:{customTasks:window.customTasks||[],taskStatus:window.taskStatus||{},updatedAt:new Date().toISOString()},
+        notes:await loadNotesFromDrive(folders.notes.id,folders.system.id),
+        bookmarks:await loadJsonFromDrive(folders.system.id,DRIVE_BOOKMARKS_FILE) || (legacyBookmarks ? await loadJsonFromDrive(legacyBookmarks.id,DRIVE_BOOKMARKS_FILE) : null),
+        workmusic:await loadJsonFromDrive(folders.system.id,DRIVE_WORKMUSIC_FILE) || (legacyWorkmusic ? await loadJsonFromDrive(legacyWorkmusic.id,DRIVE_WORKMUSIC_FILE) : null),
+        clipviewer:await loadJsonFromDrive(folders.system.id,DRIVE_CLIP_FILE) || (legacyClipviewer ? await loadJsonFromDrive(legacyClipviewer.id,DRIVE_CLIP_FILE) : null)
+      };
+      applyAppData(mergeDriveParts(parts));
+      renderEverything();
+      resolveDriveBookmarkImages()
+        .then(()=>window.renderImageBookmarks?.())
+        .catch(e=>console.warn('bookmark image background load failed',e));
+    }
+
     async function resolveDriveBookmarkImages(){
       for(const b of (window.imageBookmarks||[])){
         if(b.driveFileId && !b.url){
@@ -713,10 +757,15 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
         signInBtn.classList.add('hidden');
         signOutBtn.classList.remove('hidden');
         driveReady=true; window.isAuthReady=true;
-        await loadAppDataFromDrive();
+        await loadCalendarPartFromDrive();
         renderEverything();
-        await window.loadClipPagesFromDrive?.(true);
-        window.showFeedbackMessage('Google Drive 데이터를 불러왔습니다.');
+        loadingOverlay.classList.add('hidden');
+        window.showFeedbackMessage('달력 데이터를 불러왔습니다.');
+        deferredAppDataLoaded=false;
+        deferredAppDataError=null;
+        deferredAppDataPromise=loadDeferredAppDataFromDrive()
+          .then(()=>{ deferredAppDataLoaded=true; window.showFeedbackMessage?.('나머지 데이터를 불러왔습니다.'); })
+          .catch(e=>{ deferredAppDataError=e; console.error(e); setDriveStatus('일부 데이터 로드 실패', true); });
       }catch(e){
         console.error(e); window.showAlert('Google Drive 데이터 로드 실패: '+(e.message||e));
       }finally{ loadingOverlay.classList.add('hidden'); }
@@ -726,6 +775,7 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
     signOutBtn.onclick=()=>{
       forgetAutoLogin();
       driveAccessToken=null; driveReady=false; driveUser=null; driveFolders=null; appDataFileId=null;
+      deferredAppDataPromise=null; deferredAppDataLoaded=false; deferredAppDataError=null; clipPagesRendered=false;
       updateProfileUI(null); signOutBtn.classList.add('hidden'); signInBtn.classList.remove('hidden');
       window.isAuthReady=true;
       window.customTasks=[]; window.taskStatus={}; window.imageBookmarks=[]; window.__notesTabs={}; window.__notesTabList=[{id:'memo',name:'메모',order:0}]; window.__notesActiveTabId='memo'; window.__bookmarkTabList=[{id:'default',name:'기본',order:0}]; window.__bookmarkActiveTabId='default'; window.__workMusicTabList=[{id:'default',name:'기본',order:0}]; window.__workMusicActiveTabId='default'; window.workMusicSongs=[];
@@ -739,6 +789,20 @@ export function initDriveBackend({ initCalendar, initNotes, initBookmarks, initW
       if(!window.isAuthReady){ window.showAlert('데이터 로딩 중입니다.'); return false; }
       if(!driveAccessToken){ window.showAlert('구글 로그인 후 이용해 주세요.'); return false; }
       return true;
+    };
+    window.waitForFeatureData=(tabId)=>{
+      if(!driveAccessToken) return null;
+      if(tabId==='calendar' || tabId==='profile') return null;
+      if(tabId!=='clipviewer' && (!deferredAppDataPromise || deferredAppDataLoaded)) return null;
+      if(tabId==='clipviewer' && deferredAppDataLoaded && clipPagesRendered) return null;
+      const waitForData=deferredAppDataPromise || Promise.resolve();
+      return waitForData.then(async()=>{
+        if(deferredAppDataError) throw deferredAppDataError;
+        if(tabId==='clipviewer' && !clipPagesRendered){
+          await window.loadClipPagesFromDrive?.(true);
+          clipPagesRendered=true;
+        }
+      });
     };
     updateProfileUI(null);
 
