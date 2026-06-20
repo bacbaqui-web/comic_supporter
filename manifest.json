@@ -1,11 +1,18 @@
 {
-  "name": "magamiscoming",
-  "short_name": "magamiscoming",
-  "description": "magamiscoming - 웹툰 작가를 위한 작업 지원 플랫폼",
+  "name": "마감이즈커밍",
+  "short_name": "마감이즈커밍",
+  "description": "마감이즈커밍 - 웹툰 작가를 위한 작업 지원 플랫폼",
   "start_url": "/magamiscoming/",
   "scope": "/magamiscoming/",
   "display": "standalone",
   "background_color": "#000000",
   "theme_color": "#000000",
-  "lang": "ko"
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "120x120",
+      "type": "image/png"
+    }
+  ]
 }

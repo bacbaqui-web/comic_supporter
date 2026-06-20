@@ -1,9 +1,4 @@
     body{font-family:'Noto Sans KR',sans-serif;background:#000;color:#fff;display:flex;justify-content:flex-start;align-items:center;min-height:100vh;padding:16px;flex-direction:column;gap:0}
-    .brand-hero{width:100%;max-width:800px;margin:0 auto 18px;background:linear-gradient(145deg,#242424,#141414);border:1px solid #343434;border-radius:18px;padding:22px;box-shadow:inset 0 0 18px rgba(0,0,0,.28);text-align:left}
-    .brand-eyebrow{margin:0 0 6px;color:#d8d8d8;font-size:.9rem;font-weight:900;letter-spacing:.02em}
-    .brand-hero h1{margin:0;color:#fff;font-size:2rem;font-weight:1000;line-height:1.05;letter-spacing:-.04em}
-    .brand-subtitle{margin:8px 0 0;color:#f2f2f2;font-size:1rem;font-weight:900}
-    .brand-description{margin:10px 0 0;color:#bdbdbd;font-size:.92rem;line-height:1.65;max-width:680px}
     .tab-content{display:none}.tab-content.active{display:flex;flex-direction:column;flex-grow:1}
     .section-card{background:#2a2a2a;border-radius:12px;padding:20px;box-shadow:inset 0 0 10px rgba(0,0,0,.3);text-align:center;width:100%;max-width:800px}
     .notepad-tabs{display:flex;justify-content:center;align-items:flex-end;gap:.45rem;width:100%;max-width:800px;position:relative;z-index:2}
@@ -506,8 +501,6 @@ body{padding-bottom:76px}
 
 
     @media (max-width:768px){
-      .brand-hero{max-width:none;width:100vw;border-radius:0;border-left:0;border-right:0;margin-bottom:12px;padding:18px 14px;box-sizing:border-box}
-      .brand-hero h1{font-size:1.65rem}
       body{padding:12px 0 76px;gap:0;align-items:stretch}.section-card{width:100vw;max-width:none;padding:12px;border-radius:0;box-sizing:border-box}
       .notepad-tabs{width:100vw;max-width:none;justify-content:center;gap:.5rem;overflow-x:auto;padding:0 8px}.notepad-tab{padding:0;font-size:.8rem;flex:0 0 auto}
       .calendar-day{min-height:120px;padding:.35rem .2rem .2rem;gap:1px}.day-number{font-size:.75rem;min-width:14px}.day-top{gap:2px;min-height:24px}.daily-check-btn{font-size:.62rem;padding:3px 0}.calendar-month-counts{display:flex;margin-left:0;margin-top:4px;justify-content:center;font-size:.72rem}
