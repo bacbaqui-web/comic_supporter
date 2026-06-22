@@ -62,6 +62,7 @@ export function initDriveBackend({
   let deferredAppDataError = null;
   let clipPagesRendered = false;
   let autoSignInAttempting = false;
+  let silentSignInUnavailable = false;
   let userHasInteracted = false;
   let pendingDriveUploads = 0;
   let driveUploadProgress = {
@@ -83,11 +84,22 @@ export function initDriveBackend({
     );
   });
   window.addEventListener('beforeunload', (e) => {
-    if (pendingDriveUploads <= 0 && !driveUploadProgress.active) return;
+    if (!hasPendingDriveWork()) return;
     e.preventDefault();
     e.returnValue = '';
     return '';
   });
+
+  function hasPendingDriveWork() {
+    return (
+      pendingDriveUploads > 0 ||
+      driveUploadProgress.active ||
+      !!nonNotesSaveTimer ||
+      !!notesSaveTimer ||
+      notesSaveQueued ||
+      !!notesSaveRunPromise
+    );
+  }
 
   function getGoogleClientId() {
     return DEFAULT_GOOGLE_CLIENT_ID;
@@ -456,11 +468,13 @@ export function initDriveBackend({
         googleTokenRequestMode = 'manual';
         if (resp?.access_token) {
           driveAccessToken = resp.access_token;
+          silentSignInUnavailable = false;
           rememberAutoLogin();
           await afterGoogleLogin();
         } else {
           autoSignInAttempting = false;
           if (requestMode === 'silent') {
+            silentSignInUnavailable = true;
             hideDriveStatus();
             console.info('Silent Google login skipped', resp);
           } else {
@@ -473,6 +487,7 @@ export function initDriveBackend({
         googleTokenRequestMode = 'manual';
         autoSignInAttempting = false;
         if (requestMode === 'silent') {
+          silentSignInUnavailable = true;
           hideDriveStatus();
           console.info('Silent Google login unavailable', err);
           return;
@@ -493,12 +508,14 @@ export function initDriveBackend({
       const ok = await setupTokenClient();
       if (!ok) return;
     }
+    silentSignInUnavailable = false;
     rememberAutoLogin();
     requestGoogleAccessToken({ prompt: driveAccessToken ? '' : 'consent', mode: 'manual' });
   }
 
   async function tryAutoSignIn() {
-    if (!shouldAutoLogin() || driveAccessToken) return;
+    if (!shouldAutoLogin() || driveAccessToken || silentSignInUnavailable || autoSignInAttempting)
+      return;
     if (!googleTokenClient) {
       const ok = await setupTokenClient();
       if (!ok) return;
@@ -515,6 +532,9 @@ export function initDriveBackend({
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
       driveAccessToken = null;
+      driveReady = false;
+      setDriveStatus('Google 인증 복구 중...');
+      tryAutoSignIn().catch((e) => console.error(e));
       throw new Error('Google 인증이 만료되었습니다. 다시 로그인하세요.');
     }
     if (!res.ok) {
@@ -1041,10 +1061,10 @@ export function initDriveBackend({
     currentAppData = buildAppData();
     writeLocalAppDataCache(currentAppData);
     setDriveStatus('로컬 반영됨 · Drive 저장 예약됨');
-    nonNotesSaveTimer = setTimeout(
-      () => queueDriveSave(saveNonNotesDataNow).catch((e) => console.error(e)),
-      NON_NOTES_SAVE_DELAY_MS
-    );
+    nonNotesSaveTimer = setTimeout(() => {
+      nonNotesSaveTimer = null;
+      queueDriveSave(saveNonNotesDataNow).catch((e) => console.error(e));
+    }, NON_NOTES_SAVE_DELAY_MS);
   }
 
   function scheduleSaveAppData() {
@@ -1052,10 +1072,10 @@ export function initDriveBackend({
     currentAppData = buildAppData();
     writeLocalAppDataCache(currentAppData);
     setDriveStatus('저장 예약됨');
-    nonNotesSaveTimer = setTimeout(
-      () => queueDriveSave(saveAppDataNow).catch((e) => console.error(e)),
-      SAVE_DELAY_MS
-    );
+    nonNotesSaveTimer = setTimeout(() => {
+      nonNotesSaveTimer = null;
+      queueDriveSave(saveAppDataNow).catch((e) => console.error(e));
+    }, SAVE_DELAY_MS);
   }
 
   function scheduleSaveNotesData() {
@@ -1063,10 +1083,10 @@ export function initDriveBackend({
     currentAppData = buildAppData();
     writeLocalAppDataCache(currentAppData);
     setDriveStatus('메모 저장 예약됨');
-    notesSaveTimer = setTimeout(
-      () => queueNotesSave().catch((e) => console.error(e)),
-      SAVE_DELAY_MS
-    );
+    notesSaveTimer = setTimeout(() => {
+      notesSaveTimer = null;
+      queueNotesSave().catch((e) => console.error(e));
+    }, SAVE_DELAY_MS);
   }
 
   async function loadAppDataFromDrive() {
@@ -1232,10 +1252,20 @@ export function initDriveBackend({
 
   signInBtn.onclick = () => doSignIn();
   signOutBtn.onclick = () => {
+    if (
+      hasPendingDriveWork() &&
+      !window.confirm(
+        '아직 Drive 저장/업로드가 끝나지 않았습니다. 로그아웃하면 일부 변경이 반영되지 않을 수 있습니다. 그래도 로그아웃할까요?'
+      )
+    ) {
+      return;
+    }
     const signedOutUser = driveUser;
     forgetAutoLogin();
     clearTimeout(nonNotesSaveTimer);
     clearTimeout(notesSaveTimer);
+    nonNotesSaveTimer = null;
+    notesSaveTimer = null;
     clearLocalAppDataCache(signedOutUser);
     clearDriveBlobCache();
     driveAccessToken = null;
@@ -1248,6 +1278,7 @@ export function initDriveBackend({
     deferredAppDataError = null;
     clipPagesRendered = false;
     autoSignInAttempting = false;
+    silentSignInUnavailable = false;
     updateProfileUI(null);
     signOutBtn.classList.add('hidden');
     signInBtn.classList.remove('hidden');
@@ -1278,7 +1309,12 @@ export function initDriveBackend({
     }
     if (autoSignInAttempting) return false;
     if (!driveAccessToken) {
-      if (userHasInteracted) setDriveStatus('Google 로그인 후 이용해 주세요.');
+      if (shouldAutoLogin() && !silentSignInUnavailable) {
+        tryAutoSignIn().catch((e) => console.error(e));
+        if (userHasInteracted) setDriveStatus('Google 로그인 복구 중...');
+      } else if (userHasInteracted) {
+        setDriveStatus('Google 로그인 후 이용해 주세요.');
+      }
       return false;
     }
     return true;
