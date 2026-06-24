@@ -90,7 +90,7 @@ export function initClipViewer({
       result = db.exec(
         'SELECT ImageData FROM CanvasPreview WHERE ImageData IS NOT NULL ORDER BY ImageWidth * ImageHeight DESC LIMIT 1'
       );
-    } catch (e) {
+    } catch (_e) {
       db.close();
       return null;
     }

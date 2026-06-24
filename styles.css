@@ -1187,6 +1187,16 @@ textarea#notesArea::-webkit-scrollbar-thumb {
   border-color: #d4d4d4;
   background: #3a3a3a;
 }
+.workmusic-item.playback-error {
+  border-color: #ef4444;
+  background: #3a2424;
+}
+.workmusic-item.playback-error:hover {
+  background: #452828;
+}
+.workmusic-item.playback-error.active {
+  border-color: #f87171;
+}
 .workmusic-thumb {
   width: 100%;
   aspect-ratio: 16/9;
@@ -1241,6 +1251,21 @@ textarea#notesArea::-webkit-scrollbar-thumb {
   line-height: 1;
   letter-spacing: 0.01em;
 }
+.workmusic-error-badge {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 6;
+  background: rgba(185, 28, 28, 0.92);
+  color: #fff;
+  border: 1px solid rgba(254, 202, 202, 0.4);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
 /* 유튜브뮤직에서 불러온 곡은 작은 앨범형 카드로 표시 */
 .workmusic-item.music-track {
   display: flex;
@@ -1252,6 +1277,13 @@ textarea#notesArea::-webkit-scrollbar-thumb {
 }
 .workmusic-item.music-track:hover {
   background: #383838;
+}
+.workmusic-item.music-track.playback-error {
+  background: #3a2424;
+  border-color: #ef4444;
+}
+.workmusic-item.music-track.playback-error:hover {
+  background: #452828;
 }
 .workmusic-item.music-track .workmusic-thumb {
   width: 58px;
@@ -1286,6 +1318,9 @@ textarea#notesArea::-webkit-scrollbar-thumb {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.workmusic-item.music-track.playback-error .workmusic-music-title {
+  color: #fecaca;
+}
 .workmusic-item.music-track .workmusic-play-overlay {
   left: 8px;
   top: 8px;
@@ -1306,6 +1341,13 @@ textarea#notesArea::-webkit-scrollbar-thumb {
   font-size: 0.64rem;
   padding: 2px 4px;
   background: rgba(0, 0, 0, 0.72);
+}
+.workmusic-item.music-track .workmusic-error-badge {
+  left: 76px;
+  top: auto;
+  bottom: 7px;
+  font-size: 0.62rem;
+  padding: 2px 5px;
 }
 .workmusic-item.music-track .workmusic-actions {
   top: 50%;

@@ -53,6 +53,40 @@ export function initBookmarks() {
     return videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : null;
   }
 
+  function sanitizeInstagramEmbedCode(embedCode) {
+    try {
+      const doc = new DOMParser().parseFromString(String(embedCode || ''), 'text/html');
+      const blockquote = doc.querySelector('blockquote.instagram-media');
+      if (!blockquote) return '';
+      blockquote.querySelectorAll('script, style, iframe, object, embed').forEach((node) => {
+        node.remove();
+      });
+      [blockquote, ...blockquote.querySelectorAll('*')].forEach((node) => {
+        [...node.attributes].forEach((attr) => {
+          const name = attr.name.toLowerCase();
+          const value = String(attr.value || '');
+          if (name.startsWith('on') || /javascript:/i.test(value)) {
+            node.removeAttribute(attr.name);
+          }
+        });
+      });
+      return blockquote.outerHTML;
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  function getOpenableUrl(url) {
+    const text = String(url || '').trim();
+    if (!text) return '';
+    try {
+      const parsed = new URL(text);
+      return ['http:', 'https:', 'blob:'].includes(parsed.protocol) ? parsed.href : '';
+    } catch (_e) {
+      return '';
+    }
+  }
+
   function initializeInstagramEmbeds() {
     if (window.instgrm?.Embeds) {
       window.instgrm.Embeds.process();
@@ -75,14 +109,14 @@ export function initBookmarks() {
     if (modalImage) modalImage.src = imageUrl || '';
     if (openImageNewTabBtn) {
       openImageNewTabBtn.onclick = () => {
-        const url = imageUrl || pageUrl;
-        if (url) window.open(url, '_blank');
+        const url = getOpenableUrl(imageUrl) || getOpenableUrl(pageUrl);
+        if (url) window.open(url, '_blank', 'noopener');
       };
     }
     if (moveBookmarkTabSelect) {
       const tabs = getTabs();
       moveBookmarkTabSelect.innerHTML = tabs
-        .map((t) => `<option value="${t.id}">${escapeHtml(t.name || '탭')}</option>`)
+        .map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name || '탭')}</option>`)
         .join('');
       moveBookmarkTabSelect.value = bookmark?.bookmarkTabId || 'default';
     }
@@ -149,15 +183,18 @@ export function initBookmarks() {
       const imageUrl = d.url;
       const pageUrl = d.pageUrl;
       const sourceDomain = d.sourceDomain || 'Unknown Source';
+      const safeBookmarkId = escapeHtml(d.id);
+      const safeImageUrl = escapeHtml(imageUrl || '');
 
       let thumbnail = isVideo ? getYoutubeThumbnail(pageUrl) : imageUrl;
+      const safeThumbnail = escapeHtml(thumbnail || '');
       let iconHtml = '';
       let urlToOpen = pageUrl;
 
       if (isLink) {
         const prevImg = d.previewImageUrl || null;
         if (prevImg) {
-          iconHtml = `<img src="${prevImg}" alt="링크 미리보기" loading="lazy" decoding="async" class="img-fit-cover" onerror="this.onerror=null;this.src='https://placehold.co/100x120/444/fff?text=미리보기+오류'"/>`;
+          iconHtml = `<img src="${escapeHtml(prevImg)}" alt="링크 미리보기" loading="lazy" decoding="async" class="img-fit-cover" onerror="this.onerror=null;this.src='https://placehold.co/100x120/444/fff?text=미리보기+오류'"/>`;
         } else {
           iconHtml = `<div class="icon-overlay">
                               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:44px;height:44px;opacity:.9">
@@ -172,10 +209,11 @@ export function initBookmarks() {
         const blockquote = doc.querySelector('blockquote.instagram-media');
         urlToOpen = blockquote?.cite || pageUrl;
         const displayTitle = d.title || 'Instagram Post (클릭 시 원본 이동)';
+        const safeEmbedCode = sanitizeInstagramEmbedCode(d.embedCode);
         iconHtml = `
                 <div class="w-full h-full relative z-0">
-                    ${d.embedCode || ''}
-                    <div class="absolute top-0 left-0 right-0 p-2 bg-black bg-opacity-70 text-white text-sm font-bold z-10">${displayTitle}</div>
+                    ${safeEmbedCode}
+                    <div class="absolute top-0 left-0 right-0 p-2 bg-black bg-opacity-70 text-white text-sm font-bold z-10">${escapeHtml(displayTitle)}</div>
                 </div>
              `;
       } else if (isVideo && !thumbnail) {
@@ -186,17 +224,17 @@ export function initBookmarks() {
             .substring(0, 30) + '...';
         iconHtml = `<div class="video-title-overlay">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-red-400 mb-2" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4l12 8-12 8z"/></svg>
-                            <span class="video-title-text">${displayTitle}</span>
-                            <span class="video-url-text">${displayUrl}</span>
+                            <span class="video-title-text">${escapeHtml(displayTitle)}</span>
+                            <span class="video-url-text">${escapeHtml(displayUrl)}</span>
                         </div>`;
       } else if (isImage) {
-        iconHtml = `<img src="${imageUrl || ''}" alt="북마크된 이미지" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='https://placehold.co/100x120/444/fff?text=이미지+오류'"/>`;
+        iconHtml = `<img src="${safeImageUrl}" alt="북마크된 이미지" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='https://placehold.co/100x120/444/fff?text=이미지+오류'"/>`;
       } else if (isVideo) {
         const displayTitle = d.title || 'YouTube 영상';
-        iconHtml = `<img src="${thumbnail}" alt="동영상 썸네일" loading="lazy" decoding="async" class="img-fit-cover" onerror="this.onerror=null;this.src='https://placehold.co/100x120/444/fff?text=동영상+썸네일'"/>
+        iconHtml = `<img src="${safeThumbnail}" alt="동영상 썸네일" loading="lazy" decoding="async" class="img-fit-cover" onerror="this.onerror=null;this.src='https://placehold.co/100x120/444/fff?text=동영상+썸네일'"/>
                         <div class="icon-overlay flex-col">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4l12 8-12 8z"/></svg>
-                            <span class="text-xs mt-1 font-bold">${displayTitle}</span>
+                            <span class="text-xs mt-1 font-bold">${escapeHtml(displayTitle)}</span>
                         </div>`;
       } else {
         iconHtml = `<div class="link-title-overlay">
@@ -211,15 +249,15 @@ export function initBookmarks() {
             ${iconHtml}
           </div>
           <div class="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs px-2 py-1 truncate z-10 opacity-70">
-              ${sourceDomain}
+              ${escapeHtml(sourceDomain)}
           </div>
-          <button class="absolute top-2 right-2 bg-[#424242] text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-20" data-id="${d.id}" data-action="delete">
+          <button class="absolute top-2 right-2 bg-[#424242] text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-20" data-id="${safeBookmarkId}" data-action="delete">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
           ${
             isEditable
               ? `
-          <button class="absolute top-2 right-9 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-20" data-id="${d.id}" data-action="edit">
+          <button class="absolute top-2 right-9 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-20" data-id="${safeBookmarkId}" data-action="edit">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
             </svg>
@@ -233,7 +271,8 @@ export function initBookmarks() {
       card.addEventListener('click', (e) => {
         if (e.target.closest('button[data-action]')) return;
         if (isVideo || isLink || isInstagram) {
-          if (urlToOpen) window.open(urlToOpen, '_blank');
+          const safeUrl = getOpenableUrl(urlToOpen);
+          if (safeUrl) window.open(safeUrl, '_blank', 'noopener');
         } else if (isImage) {
           openImageModal(imageUrl, pageUrl, d);
         }
@@ -461,6 +500,10 @@ export function initBookmarks() {
   // 링크 미리보기 모달
   const openPreviewUploadModal = (bookmark) => {
     currentPreviewEditingBookmark = bookmark;
+    if (previewPasteArea) {
+      previewPasteArea.tabIndex = 0;
+      setTimeout(() => previewPasteArea.focus(), 50);
+    }
     if (previewUploadModal) previewUploadModal.style.display = 'flex';
   };
   window.openPreviewUploadModal = openPreviewUploadModal;
@@ -471,6 +514,20 @@ export function initBookmarks() {
   closePreviewUploadBtn?.addEventListener('click', closePreviewUploadModal);
   previewUploadModal?.addEventListener('click', (e) => {
     if (e.target === previewUploadModal) closePreviewUploadModal();
+  });
+  previewPasteArea?.addEventListener('click', () => previewPasteArea.focus());
+  previewPasteArea?.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    previewPasteArea.classList.add('active');
+  });
+  previewPasteArea?.addEventListener('dragleave', () => {
+    previewPasteArea.classList.remove('active');
+  });
+  previewPasteArea?.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    previewPasteArea.classList.remove('active');
+    const file = [...(e.dataTransfer?.files || [])].find((item) => item.type?.startsWith('image/'));
+    if (file) await uploadPreviewFile(file);
   });
 
   const uploadPreviewFile = async (file) => {
@@ -505,15 +562,7 @@ export function initBookmarks() {
     if (!blob) return;
     const fileName = `preview_${currentPreviewEditingBookmark.id}.png`;
     const file = new File([blob], fileName, { type: blob.type || 'image/png' });
-    try {
-      window.showFeedbackMessage?.('미리보기 이미지 업로드 중...');
-      await window.uploadBookmarkPreviewImage(currentPreviewEditingBookmark.id, file);
-      window.showFeedbackMessage?.('미리보기 이미지가 저장되었습니다.');
-      closePreviewUploadModal();
-    } catch (err) {
-      console.error(err);
-      window.showAlert?.('미리보기 이미지 업로드 중 오류가 발생했습니다.');
-    }
+    await uploadPreviewFile(file);
   });
 
   // ===== D&D/붙여넣기/클릭-자동붙여넣기 =====
@@ -539,7 +588,12 @@ export function initBookmarks() {
 
   // 인스타그램 퍼가기 코드 확인 (blockquote 태그를 포함하는지 확인)
   function isInstagramEmbed(text) {
-    return /<blockquote class="instagram-media".*<\/blockquote>/.test(text);
+    try {
+      const doc = new DOMParser().parseFromString(String(text || ''), 'text/html');
+      return !!doc.querySelector('blockquote.instagram-media');
+    } catch (_e) {
+      return false;
+    }
   }
 
   // **신규: 도메인 추출 유틸리티**
@@ -573,6 +627,33 @@ export function initBookmarks() {
     } catch {
       return false;
     }
+  }
+
+  async function addBookmarkFromText(text, labelPrefix = '') {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    const label = labelPrefix ? `${labelPrefix} ` : '';
+    if (isInstagramEmbed(value) && window.addInstagramBookmark) {
+      await window.addInstagramBookmark(value);
+      window.showFeedbackMessage?.(`${label}인스타그램 게시물 북마크됨`);
+      return true;
+    }
+    if (isImageUrl(value) && window.addRemoteImage) {
+      await window.addRemoteImage(value, value);
+      window.showFeedbackMessage?.(`${label}이미지 URL 북마크됨`);
+      return true;
+    }
+    if (isVideoUrl(value) && window.addVideoBookmark) {
+      await window.addVideoBookmark(value);
+      window.showFeedbackMessage?.(`${label}동영상 URL 북마크됨`);
+      return true;
+    }
+    if (isGenericUrl(value) && window.addGenericBookmark) {
+      await window.addGenericBookmark(value);
+      window.showFeedbackMessage?.(`${label}페이지 URL 북마크됨`);
+      return true;
+    }
+    return false;
   }
 
   // 클릭: 클립보드 접근 및 자동 붙여넣기 시도
@@ -640,6 +721,30 @@ export function initBookmarks() {
       console.error(e);
       window.showAlert?.('클립보드 권한을 허용하세요.');
     }
+  });
+
+  dragArea?.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dragArea.classList.add('active');
+  });
+  dragArea?.addEventListener('dragleave', () => {
+    dragArea.classList.remove('active');
+  });
+  dragArea?.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dragArea.classList.remove('active');
+    const imageFile = [...(e.dataTransfer?.files || [])].find((file) =>
+      file.type?.startsWith('image/')
+    );
+    if (imageFile && window.addImage) {
+      await window.addImage(imageFile, null);
+      window.showFeedbackMessage?.('드롭한 이미지 업로드됨');
+      return;
+    }
+    const text =
+      e.dataTransfer?.getData('text/uri-list') || e.dataTransfer?.getData('text/plain') || '';
+    if (await addBookmarkFromText(text, '드롭한')) return;
+    window.showAlert?.('드롭한 항목에서 유효한 이미지나 URL을 찾지 못했습니다.');
   });
 
   // 붙여넣기 핸들러

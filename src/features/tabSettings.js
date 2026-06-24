@@ -50,6 +50,7 @@ export function openTabSettings({
   onSave,
   onDelete,
   onBackup,
+  onRefresh,
   onReorder
 } = {}) {
   const modal = document.getElementById('tabSettingsModal');
@@ -58,6 +59,7 @@ export function openTabSettings({
   const saveBtn = document.getElementById('tabSettingsSaveBtn');
   const deleteBtn = document.getElementById('tabSettingsDeleteBtn');
   const backupBtn = document.getElementById('tabSettingsBackupBtn');
+  const refreshBtn = document.getElementById('tabSettingsRefreshBtn');
   const leftBtn = document.getElementById('tabSettingsMoveLeftBtn');
   const rightBtn = document.getElementById('tabSettingsMoveRightBtn');
   if (!modal || !input) return;
@@ -79,6 +81,7 @@ export function openTabSettings({
     [deleteBtn, backupBtn, leftBtn, rightBtn].forEach((btn) => {
       if (btn) btn.style.display = create ? 'none' : 'inline-flex';
     });
+    if (refreshBtn) refreshBtn.style.display = !create && onRefresh ? 'inline-flex' : 'none';
   };
 
   if (titleEl) titleEl.textContent = create ? title.replace('설정', '새 탭') : title;
@@ -103,6 +106,13 @@ export function openTabSettings({
     if (!tab?.id) return;
     await onBackup?.(tab.id);
   };
+  if (refreshBtn) {
+    refreshBtn.onclick = async () => {
+      if (!tab?.id) return;
+      await onRefresh?.(tab.id);
+      updateMoveState();
+    };
+  }
   const move = async (delta) => {
     const { tabs, index } = getIndex();
     const nextIndex = index + delta;

@@ -49,10 +49,25 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
   let workMusicPlayer = null;
   let workMusicSyncTimer = null;
   let workMusicDurationSaveTimer = null;
+  let workMusicPlaybackWatchTimer = null;
+  let workMusicPlaybackWatchToken = 0;
+  let workMusicFailureSkipTimer = null;
+  let workMusicAutoSkipSession = null;
   window.workMusicCurrentPlayOrder = window.workMusicCurrentPlayOrder || [];
 
   const showFeedbackMessage = (message) => window.showFeedbackMessage?.(message);
   const showAlert = (message) => window.showAlert?.(message);
+  const WORK_MUSIC_PLAYBACK_TIMEOUT_MS = 12000;
+  const WORK_MUSIC_FAILURE_SKIP_DELAY_MS = 1200;
+  const WORK_MUSIC_PLAYBACK_ERROR_LABELS = {
+    2: '잘못된 링크',
+    5: '재생 오류',
+    100: '삭제/비공개',
+    101: '임베드 불가',
+    150: '임베드 불가',
+    invalid: '잘못된 링크',
+    timeout: '응답 없음'
+  };
 
   // ===== 노동요(YouTube) =====
   // 일반 embed iframe + YouTube postMessage 제어. 재생/일시정지는 iframe을 다시 만들지 않고 명령만 보냅니다.
@@ -474,6 +489,181 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
     return songs.map((_, offset) => (startIndex + offset) % songs.length);
   }
 
+  function getWorkMusicSongKey(song, index) {
+    const activeTabId = song?.workMusicTabId || getActiveWorkMusicTabId();
+    return String(song?.id || `${activeTabId}:${song?.videoId || index}`);
+  }
+
+  function getWorkMusicPlaybackErrorReason(code) {
+    const key = code === undefined || code === null ? '' : String(code);
+    return WORK_MUSIC_PLAYBACK_ERROR_LABELS[key] || '재생 실패';
+  }
+
+  function clearWorkMusicPlaybackWatch() {
+    workMusicPlaybackWatchToken += 1;
+    clearTimeout(workMusicPlaybackWatchTimer);
+    workMusicPlaybackWatchTimer = null;
+  }
+
+  function clearWorkMusicFailureSkipTimer() {
+    clearTimeout(workMusicFailureSkipTimer);
+    workMusicFailureSkipTimer = null;
+  }
+
+  function resetWorkMusicAutoSkipSession() {
+    workMusicAutoSkipSession = null;
+  }
+
+  function getWorkMusicCurrentPlayerIndex() {
+    const songs = getActiveWorkMusicSongs();
+    if (!songs.length) return 0;
+    try {
+      if (workMusicPlayer && typeof workMusicPlayer.getPlaylistIndex === 'function') {
+        const ytIndex = Number(workMusicPlayer.getPlaylistIndex());
+        const order = window.workMusicCurrentPlayOrder || [];
+        const mapped = Number.isFinite(ytIndex) ? order[ytIndex] : undefined;
+        if (Number.isInteger(mapped) && mapped >= 0 && mapped < songs.length) return mapped;
+      }
+    } catch (err) {
+      console.warn('work music current index read failed', err);
+    }
+    const fallback = Number(window.workMusicCurrentIndex || 0);
+    return fallback >= 0 && fallback < songs.length ? fallback : 0;
+  }
+
+  function scheduleWorkMusicPlaybackWatch(index) {
+    const songs = getActiveWorkMusicSongs();
+    const song = songs[index];
+    if (!song) return;
+    clearWorkMusicPlaybackWatch();
+    const expectedTabId = getActiveWorkMusicTabId();
+    const expectedSongKey = getWorkMusicSongKey(song, index);
+    const token = workMusicPlaybackWatchToken;
+    workMusicPlaybackWatchTimer = setTimeout(() => {
+      if (token !== workMusicPlaybackWatchToken) return;
+      if (!window.workMusicIsPlaying || getActiveWorkMusicTabId() !== expectedTabId) return;
+      const currentIndex = Number(window.workMusicCurrentIndex || 0);
+      const currentSong = getActiveWorkMusicSongs()[currentIndex];
+      if (
+        currentIndex !== index ||
+        getWorkMusicSongKey(currentSong, currentIndex) !== expectedSongKey
+      ) {
+        return;
+      }
+      handleWorkMusicPlaybackFailure(index, 'timeout');
+    }, WORK_MUSIC_PLAYBACK_TIMEOUT_MS);
+  }
+
+  function markWorkMusicPlaybackError(index, code) {
+    const songs = getActiveWorkMusicSongs();
+    const song = songs[index];
+    if (!song) return false;
+    const reason = getWorkMusicPlaybackErrorReason(code);
+    const errorCode = code === undefined || code === null ? '' : String(code);
+    const changed =
+      song.playbackStatus !== 'error' ||
+      song.playbackErrorReason !== reason ||
+      String(song.playbackErrorCode || '') !== errorCode;
+    song.playbackStatus = 'error';
+    song.playbackErrorReason = reason;
+    song.playbackErrorCode = errorCode;
+    song.playbackErrorAt = new Date().toISOString();
+    if (changed) window.cloudSaveWorkMusic?.();
+    return changed;
+  }
+
+  function clearWorkMusicPlaybackError(index) {
+    const songs = getActiveWorkMusicSongs();
+    const song = songs[index];
+    if (
+      !song ||
+      (song.playbackStatus !== 'error' &&
+        !song.playbackErrorReason &&
+        !song.playbackErrorCode &&
+        !song.playbackErrorAt)
+    ) {
+      return false;
+    }
+    delete song.playbackStatus;
+    delete song.playbackErrorReason;
+    delete song.playbackErrorCode;
+    delete song.playbackErrorAt;
+    window.cloudSaveWorkMusic?.();
+    return true;
+  }
+
+  function getNextWorkMusicIndexAfterFailure(failedIndex) {
+    const songs = getActiveWorkMusicSongs();
+    if (songs.length <= 1) return -1;
+    const activeTabId = getActiveWorkMusicTabId();
+    if (!workMusicAutoSkipSession || workMusicAutoSkipSession.tabId !== activeTabId) {
+      workMusicAutoSkipSession = { tabId: activeTabId, triedKeys: new Set() };
+    }
+    const failedSong = songs[failedIndex];
+    if (failedSong) {
+      workMusicAutoSkipSession.triedKeys.add(getWorkMusicSongKey(failedSong, failedIndex));
+    }
+
+    const rawOrder = window.workMusicCurrentPlayOrder?.length
+      ? window.workMusicCurrentPlayOrder
+      : getWorkMusicPlayOrder(failedIndex);
+    const order = rawOrder.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < songs.length);
+    const start = Math.max(0, order.indexOf(failedIndex));
+    for (let offset = 1; offset <= order.length; offset += 1) {
+      const idx = order[(start + offset) % order.length];
+      const song = songs[idx];
+      if (!song) continue;
+      const songKey = getWorkMusicSongKey(song, idx);
+      if (workMusicAutoSkipSession.triedKeys.has(songKey)) continue;
+      if (song.playbackStatus === 'error') continue;
+      return idx;
+    }
+    return -1;
+  }
+
+  function handleWorkMusicPlaybackFailure(index = getWorkMusicCurrentPlayerIndex(), code = '') {
+    const songs = getActiveWorkMusicSongs();
+    if (!songs.length) return;
+    const failedIndex =
+      index >= 0 && index < songs.length ? index : getWorkMusicCurrentPlayerIndex();
+    const failedSong = songs[failedIndex];
+    if (!failedSong) return;
+    clearWorkMusicPlaybackWatch();
+    stopWorkMusicSyncTimer();
+    window.workMusicCurrentIndex = failedIndex;
+    window.workMusicIsPlaying = false;
+    markWorkMusicPlaybackError(failedIndex, code);
+    renderWorkMusicPlayButton();
+    updateWorkMusicRemoteUI();
+    renderWorkMusic();
+
+    const nextIndex = getNextWorkMusicIndexAfterFailure(failedIndex);
+    if (nextIndex < 0) {
+      resetWorkMusicAutoSkipSession();
+      showFeedbackMessage('재생 가능한 다음 곡을 찾지 못했습니다.');
+      return;
+    }
+
+    const failedTitle = failedSong.title || `YouTube ${failedSong.videoId || ''}`;
+    showFeedbackMessage(`${failedTitle} 재생 실패, 다음 곡으로 넘어갑니다.`);
+    clearWorkMusicFailureSkipTimer();
+    const expectedTabId = getActiveWorkMusicTabId();
+    const expectedSongKey = getWorkMusicSongKey(failedSong, failedIndex);
+    workMusicFailureSkipTimer = setTimeout(() => {
+      workMusicFailureSkipTimer = null;
+      if (getActiveWorkMusicTabId() !== expectedTabId) return;
+      const currentSongs = getActiveWorkMusicSongs();
+      const currentSong = currentSongs[failedIndex];
+      if (
+        Number(window.workMusicCurrentIndex || 0) !== failedIndex ||
+        getWorkMusicSongKey(currentSong, failedIndex) !== expectedSongKey
+      ) {
+        return;
+      }
+      playWorkMusicAt(nextIndex, { resetSkipSession: false });
+    }, WORK_MUSIC_FAILURE_SKIP_DELAY_MS);
+  }
+
   function getWorkMusicDisplayOrder(songs) {
     const count = songs.length;
     if (!count) return [];
@@ -650,8 +840,11 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
   function onWorkMusicPlayerStateChange(event) {
     const state = event?.data;
     if (window.YT && state === window.YT.PlayerState.PLAYING) {
+      clearWorkMusicPlaybackWatch();
+      resetWorkMusicAutoSkipSession();
       window.workMusicIsPlaying = true;
       syncWorkMusicFromPlayer();
+      clearWorkMusicPlaybackError(Number(window.workMusicCurrentIndex || 0));
       renderWorkMusicPlayButton();
       renderWorkMusic();
       startWorkMusicSyncTimer();
@@ -659,6 +852,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       window.YT &&
       (state === window.YT.PlayerState.PAUSED || state === window.YT.PlayerState.ENDED)
     ) {
+      clearWorkMusicPlaybackWatch();
       window.workMusicIsPlaying = false;
       renderWorkMusicPlayButton();
       renderWorkMusic();
@@ -666,11 +860,16 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
     }
   }
 
+  function onWorkMusicPlayerError(event) {
+    handleWorkMusicPlaybackFailure(getWorkMusicCurrentPlayerIndex(), event?.data || '');
+  }
+
   async function renderWorkMusicIframe(index, autoplay = true) {
     const box = document.getElementById('workMusicPlayerBox');
     const songs = getActiveWorkMusicSongs();
     if (!box) return;
     stopWorkMusicSyncTimer();
+    clearWorkMusicPlaybackWatch();
     if (workMusicPlayer && typeof workMusicPlayer.destroy === 'function') {
       try {
         workMusicPlayer.destroy();
@@ -698,6 +897,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       window.workMusicCurrentPlayOrder = [];
       renderWorkMusicPlayButton();
       updateWorkMusicRemoteUI();
+      if (autoplay) handleWorkMusicPlaybackFailure(index, 'invalid');
       return;
     }
     const order = getWorkMusicPlayOrder(index);
@@ -725,15 +925,21 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
           applyWorkMusicVolume();
           if (autoplay) event.target.playVideo();
           setTimeout(syncWorkMusicFromPlayer, 500);
-          if (autoplay) startWorkMusicSyncTimer();
+          if (autoplay) {
+            scheduleWorkMusicPlaybackWatch(index);
+            startWorkMusicSyncTimer();
+          }
         },
-        onStateChange: onWorkMusicPlayerStateChange
+        onStateChange: onWorkMusicPlayerStateChange,
+        onError: onWorkMusicPlayerError
       }
     });
   }
 
-  function playWorkMusicAt(index) {
+  function playWorkMusicAt(index, { resetSkipSession = true } = {}) {
     const songs = getActiveWorkMusicSongs();
+    clearWorkMusicFailureSkipTimer();
+    if (resetSkipSession) resetWorkMusicAutoSkipSession();
     if (!songs.length) {
       renderWorkMusic();
       showFeedbackMessage('먼저 유튜브 링크를 추가해주세요.');
@@ -759,11 +965,15 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       renderWorkMusicIframe(window.workMusicCurrentIndex || 0, true);
       window.workMusicIsPlaying = true;
     } else if (window.workMusicIsPlaying) {
+      clearWorkMusicPlaybackWatch();
+      clearWorkMusicFailureSkipTimer();
       sendWorkMusicCommand('pauseVideo');
       window.workMusicIsPlaying = false;
     } else {
+      resetWorkMusicAutoSkipSession();
       sendWorkMusicCommand('playVideo');
       window.workMusicIsPlaying = true;
+      scheduleWorkMusicPlaybackWatch(Number(window.workMusicCurrentIndex || 0));
     }
     renderWorkMusicPlayButton();
     updateWorkMusicRemoteUI();
@@ -816,14 +1026,29 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       const row = document.createElement('div');
       const isActive = idx === (window.workMusicCurrentIndex || 0);
       const isMusicTrack = isWorkMusicAudioCard(song);
-      row.className =
-        'workmusic-item' + (isMusicTrack ? ' music-track' : '') + (isActive ? ' active' : '');
+      const hasPlaybackError = song.playbackStatus === 'error';
+      row.className = [
+        'workmusic-item',
+        isMusicTrack ? 'music-track' : '',
+        isActive ? 'active' : '',
+        hasPlaybackError ? 'playback-error' : ''
+      ]
+        .filter(Boolean)
+        .join(' ');
       const title = song.title || `YouTube ${song.videoId}`;
       const artist = getSongArtist(song);
       const durationText = song.durationText || formatWorkMusicDuration(song.durationSeconds);
       const thumbSrc =
         song.thumbnail || `https://img.youtube.com/vi/${escapeHtml(song.videoId)}/mqdefault.jpg`;
-      row.setAttribute('title', artist ? `${title} - ${artist}` : title);
+      const playbackErrorReason = song.playbackErrorReason || '재생 실패';
+      const rowTitle = artist ? `${title} - ${artist}` : title;
+      row.setAttribute(
+        'title',
+        hasPlaybackError ? `${rowTitle} (${playbackErrorReason})` : rowTitle
+      );
+      const playbackErrorBadge = hasPlaybackError
+        ? `<div class="workmusic-error-badge" title="${escapeHtml(playbackErrorReason)}">재생 실패</div>`
+        : '';
       if (isMusicTrack) {
         row.innerHTML = `
             <img class="workmusic-thumb" src="${escapeHtml(thumbSrc)}" alt="앨범커버" onerror="this.onerror=null;this.src='https://placehold.co/100x100/333/fff?text=♪'">
@@ -834,6 +1059,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
               <div class="workmusic-music-title">${escapeHtml(title)}</div>
               <div class="workmusic-music-artist">${escapeHtml(artist || 'YouTube Music')}</div>
             </div>
+            ${playbackErrorBadge}
             ${durationText ? `<div class="workmusic-duration-badge">${escapeHtml(durationText)}</div>` : ''}
             <div class="workmusic-actions">
               <button class="workmusic-small-btn" data-action="settings" data-index="${idx}" title="설정" aria-label="설정">
@@ -847,6 +1073,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
               ${isActive && window.workMusicIsPlaying ? workMusicPauseSvg : workMusicPlaySvg}
             </div>
             <div class="workmusic-title-overlay">${escapeHtml(title)}</div>
+            ${playbackErrorBadge}
             ${durationText ? `<div class="workmusic-duration-badge">${escapeHtml(durationText)}</div>` : ''}
             <div class="workmusic-actions">
               <button class="workmusic-small-btn" data-action="settings" data-index="${idx}" title="설정" aria-label="설정">
@@ -908,6 +1135,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
     const deletingCurrent = idx === Number(window.workMusicCurrentIndex || 0);
     const deleteId = songs[idx].id;
     window.workMusicSongs = (window.workMusicSongs || []).filter((s) => s.id !== deleteId);
+    resetWorkMusicDisplayShuffle(getActiveWorkMusicTabId());
     const nextSongs = getActiveWorkMusicSongs();
     if (window.workMusicCurrentIndex >= nextSongs.length)
       window.workMusicCurrentIndex = Math.max(0, nextSongs.length - 1);
@@ -923,9 +1151,9 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
     await saveWorkMusicTitle();
     const idx = Number(window.currentWorkMusicSettingIndex);
     const song = getActiveWorkMusicSongs()[idx];
-    const url =
-      song?.url || (song?.videoId ? `https://www.youtube.com/watch?v=${song.videoId}` : '');
-    if (url) window.open(url, '_blank');
+    const videoId = song?.videoId || extractYoutubeVideoId(song?.url);
+    const url = videoId ? `https://www.youtube.com/watch?v=${videoId}` : '';
+    if (url) window.open(url, '_blank', 'noopener');
   }
 
   function extractYoutubePlaylistId(raw) {
@@ -1331,6 +1559,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       }
     ];
     window.__workMusicActiveTabId = id;
+    resetWorkMusicDisplayShuffle(id);
     const existingIds = new Set(
       (window.workMusicSongs || []).map((s) => `${s.workMusicTabId || 'default'}:${s.videoId}`)
     );
@@ -1408,6 +1637,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       workMusicTabId: activeTabId,
       sourceType
     });
+    resetWorkMusicDisplayShuffle(activeTabId);
     await window.cloudSaveWorkMusic?.();
     renderWorkMusic();
     return true;
@@ -1489,6 +1719,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
   function openWorkMusicTabSettings(tabId) {
     const tab = getWorkMusicTabs().find((t) => t.id === tabId);
     if (!tab) return;
+    const playlistId = getWorkMusicTabPlaylistId(tabId);
     openTabSettings({
       title: '노동요 탭 설정',
       tab,
@@ -1500,6 +1731,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
         await window.cloudDeleteWorkMusicTab?.(id);
       },
       onBackup: async (id) => backupWorkMusicTab(id),
+      onRefresh: playlistId ? async (id) => refreshWorkMusicPlaylistTab(id) : null,
       onReorder: async (next) => {
         await window.cloudReorderWorkMusicTabs?.(next);
       }
@@ -1578,6 +1810,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
       ...(window.workMusicSongs || []).filter((s) => (s.workMusicTabId || 'default') !== tabId),
       ...nextSongsForTab
     ];
+    resetWorkMusicDisplayShuffle(tabId);
     window.__workMusicTabList = getWorkMusicTabs().map((t) =>
       t.id === tabId
         ? { ...t, sourcePlaylistId: data.playlistId || playlistId, sourceType: playlistSourceType }
@@ -1716,6 +1949,7 @@ export function initWorkMusic({ showTab = (tabId) => window.showTab?.(tabId) } =
     workMusicRemoteInfo?.addEventListener('click', () => showTab('workmusic'));
     workMusicModeBtn?.addEventListener('click', async () => {
       window.workMusicMode = window.workMusicMode === 'random' ? 'sequential' : 'random';
+      resetWorkMusicDisplayShuffle();
       await window.cloudSaveWorkMusic?.();
       renderWorkMusic();
       if (getActiveWorkMusicSongs().length)

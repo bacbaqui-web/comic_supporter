@@ -18,7 +18,6 @@ export function initDriveBackend({
   const DRIVE_CALENDAR_FOLDER = DRIVE_FOLDERS.calendar || '달력';
   const DRIVE_NOTES_FOLDER = DRIVE_FOLDERS.notes || '메모';
   const DRIVE_BOOKMARKS_FOLDER = DRIVE_FOLDERS.bookmarks || '북마크';
-  const DRIVE_BOOKMARK_IMAGES_FOLDER = DRIVE_FOLDERS.bookmarkImages || ''; // 북마크 이미지 중간 폴더 사용 안 함
   const DRIVE_WORKMUSIC_FOLDER = DRIVE_FOLDERS.workmusic || '노동요';
   const DRIVE_CLIP_FOLDER = DRIVE_FOLDERS.clipviewer || '클립뷰어';
   const DRIVE_CLIP_CURRENT_FOLDER = DRIVE_FOLDERS.clipCurrent || 'current';
@@ -50,10 +49,10 @@ export function initDriveBackend({
   let driveUser = null;
   let driveReady = false;
   let driveFolders = null;
-  let appDataFileId = null;
   let nonNotesSaveTimer = null;
   let notesSaveTimer = null;
   let driveSaveQueue = Promise.resolve();
+  let driveSaveInFlight = 0;
   let notesSaveRunPromise = null;
   let notesSaveQueued = false;
   let driveImageUrlCache = new Map();
@@ -93,6 +92,7 @@ export function initDriveBackend({
   function hasPendingDriveWork() {
     return (
       pendingDriveUploads > 0 ||
+      driveSaveInFlight > 0 ||
       driveUploadProgress.active ||
       !!nonNotesSaveTimer ||
       !!notesSaveTimer ||
@@ -165,6 +165,17 @@ export function initDriveBackend({
       location.origin
     ).toString();
   }
+  function revokeDriveImageUrl(fileId) {
+    const url = driveImageUrlCache.get(fileId);
+    if (url) URL.revokeObjectURL(url);
+    driveImageUrlCache.delete(fileId);
+  }
+  function revokeAllDriveImageUrls() {
+    for (const url of driveImageUrlCache.values()) {
+      URL.revokeObjectURL(url);
+    }
+    driveImageUrlCache.clear();
+  }
   async function getCachedDriveBlob(fileId) {
     if (!fileId || !window.caches) return null;
     try {
@@ -196,6 +207,7 @@ export function initDriveBackend({
     } catch (_) {}
   }
   async function clearDriveBlobCache() {
+    revokeAllDriveImageUrls();
     if (!window.caches) return;
     try {
       await caches.delete(DRIVE_BLOB_CACHE_NAME);
@@ -428,6 +440,7 @@ export function initDriveBackend({
     window.workMusicVolume = Number(st.workMusicVolume ?? 80);
     window.workMusicLastVolume = Number(st.workMusicLastVolume ?? 80);
     window.workMusicIsMuted = !!st.workMusicIsMuted;
+    revokeAllDriveImageUrls();
     window.imageBookmarks = (
       Array.isArray(currentAppData.imageBookmarks) ? currentAppData.imageBookmarks : []
     ).map((b) => ({
@@ -548,7 +561,7 @@ export function initDriveBackend({
       return await driveFetch('https://www.googleapis.com/oauth2/v3/userinfo').then((r) =>
         r.json()
       );
-    } catch (e) {
+    } catch (_e) {
       return {};
     }
   }
@@ -908,7 +921,9 @@ export function initDriveBackend({
       (await loadJsonFromDrive(folderId, DRIVE_NOTES_FILE));
     if (index && Array.isArray(index.notesTabList)) {
       const notesTabs = {};
-      const notesTabList = index.notesTabList.map(({ noteFileName, noteFileId, ...tab }) => tab);
+      const notesTabList = index.notesTabList.map(
+        ({ noteFileName: _noteFileName, noteFileId: _noteFileId, ...tab }) => tab
+      );
       for (const tab of index.notesTabList) {
         let loaded = false;
         try {
@@ -971,69 +986,84 @@ export function initDriveBackend({
     ]);
   }
 
+  async function withDriveSaveInFlight(run) {
+    driveSaveInFlight += 1;
+    try {
+      return await run();
+    } finally {
+      driveSaveInFlight = Math.max(0, driveSaveInFlight - 1);
+    }
+  }
+
   async function saveAppDataNow() {
     if (!driveReady || !driveAccessToken) return;
-    setDriveBusy('Google Drive 저장 중...');
-    try {
-      const folders = await ensureDriveFolders();
-      const data = buildAppData();
-      currentAppData = data;
-      writeLocalAppDataCache(data);
-      const parts = splitAppDataForDrive(data);
-      await Promise.all([
-        saveJsonToDrive(folders.system.id, DRIVE_CALENDAR_FILE, parts.calendar),
-        saveNotesToDrive(folders.notes.id, folders.system.id, parts.notes),
-        saveJsonToDrive(folders.system.id, DRIVE_BOOKMARKS_FILE, parts.bookmarks),
-        saveJsonToDrive(folders.system.id, DRIVE_WORKMUSIC_FILE, parts.workmusic),
-        saveJsonToDrive(folders.system.id, DRIVE_CLIP_FILE, parts.clipviewer)
-      ]);
-      await cleanupLegacyJsonFiles();
-      setDriveStatus('Google Drive 저장 완료');
-    } catch (e) {
-      console.error(e);
-      setDriveStatus('Drive 저장 실패', true);
-      throw e;
-    }
+    return withDriveSaveInFlight(async () => {
+      setDriveBusy('Google Drive 저장 중...');
+      try {
+        const folders = await ensureDriveFolders();
+        const data = buildAppData();
+        currentAppData = data;
+        writeLocalAppDataCache(data);
+        const parts = splitAppDataForDrive(data);
+        await Promise.all([
+          saveJsonToDrive(folders.system.id, DRIVE_CALENDAR_FILE, parts.calendar),
+          saveNotesToDrive(folders.notes.id, folders.system.id, parts.notes),
+          saveJsonToDrive(folders.system.id, DRIVE_BOOKMARKS_FILE, parts.bookmarks),
+          saveJsonToDrive(folders.system.id, DRIVE_WORKMUSIC_FILE, parts.workmusic),
+          saveJsonToDrive(folders.system.id, DRIVE_CLIP_FILE, parts.clipviewer)
+        ]);
+        await cleanupLegacyJsonFiles();
+        setDriveStatus('Google Drive 저장 완료');
+      } catch (e) {
+        console.error(e);
+        setDriveStatus('Drive 저장 실패', true);
+        throw e;
+      }
+    });
   }
   async function saveNonNotesDataNow() {
     if (!driveReady || !driveAccessToken) return;
-    setDriveBusy('Google Drive 저장 중...');
-    try {
-      const folders = await ensureDriveFolders();
-      const data = buildAppData();
-      currentAppData = data;
-      writeLocalAppDataCache(data);
-      const parts = splitAppDataForDrive(data);
-      await Promise.all([
-        saveJsonToDrive(folders.system.id, DRIVE_CALENDAR_FILE, parts.calendar),
-        saveJsonToDrive(folders.system.id, DRIVE_BOOKMARKS_FILE, parts.bookmarks),
-        saveJsonToDrive(folders.system.id, DRIVE_WORKMUSIC_FILE, parts.workmusic),
-        saveJsonToDrive(folders.system.id, DRIVE_CLIP_FILE, parts.clipviewer)
-      ]);
-      await cleanupLegacyJsonFiles();
-      setDriveStatus('Google Drive 저장 완료');
-    } catch (e) {
-      console.error(e);
-      setDriveStatus('Drive 저장 실패', true);
-      throw e;
-    }
+    return withDriveSaveInFlight(async () => {
+      setDriveBusy('Google Drive 저장 중...');
+      try {
+        const folders = await ensureDriveFolders();
+        const data = buildAppData();
+        currentAppData = data;
+        writeLocalAppDataCache(data);
+        const parts = splitAppDataForDrive(data);
+        await Promise.all([
+          saveJsonToDrive(folders.system.id, DRIVE_CALENDAR_FILE, parts.calendar),
+          saveJsonToDrive(folders.system.id, DRIVE_BOOKMARKS_FILE, parts.bookmarks),
+          saveJsonToDrive(folders.system.id, DRIVE_WORKMUSIC_FILE, parts.workmusic),
+          saveJsonToDrive(folders.system.id, DRIVE_CLIP_FILE, parts.clipviewer)
+        ]);
+        await cleanupLegacyJsonFiles();
+        setDriveStatus('Google Drive 저장 완료');
+      } catch (e) {
+        console.error(e);
+        setDriveStatus('Drive 저장 실패', true);
+        throw e;
+      }
+    });
   }
   async function saveNotesDataNow() {
     if (!driveReady || !driveAccessToken) return;
-    setDriveBusy('메모 Drive 저장 중...');
-    try {
-      const folders = await ensureDriveFolders();
-      const data = buildAppData();
-      currentAppData = data;
-      writeLocalAppDataCache(data);
-      const parts = splitAppDataForDrive(data);
-      await saveNotesToDrive(folders.notes.id, folders.system.id, parts.notes);
-      setDriveStatus('메모 Drive 저장 완료');
-    } catch (e) {
-      console.error(e);
-      setDriveStatus('메모 저장 실패', true);
-      throw e;
-    }
+    return withDriveSaveInFlight(async () => {
+      setDriveBusy('메모 Drive 저장 중...');
+      try {
+        const folders = await ensureDriveFolders();
+        const data = buildAppData();
+        currentAppData = data;
+        writeLocalAppDataCache(data);
+        const parts = splitAppDataForDrive(data);
+        await saveNotesToDrive(folders.notes.id, folders.system.id, parts.notes);
+        setDriveStatus('메모 Drive 저장 완료');
+      } catch (e) {
+        console.error(e);
+        setDriveStatus('메모 저장 실패', true);
+        throw e;
+      }
+    });
   }
 
   function queueDriveSave(saveFn) {
@@ -1190,9 +1220,12 @@ export function initDriveBackend({
     for (const b of window.imageBookmarks || []) {
       if (b.driveFileId && !b.url) {
         try {
-          const blob = await downloadDriveBlobCached(b.driveFileId);
-          const url = URL.createObjectURL(blob);
-          driveImageUrlCache.set(b.driveFileId, url);
+          let url = driveImageUrlCache.get(b.driveFileId);
+          if (!url) {
+            const blob = await downloadDriveBlobCached(b.driveFileId);
+            url = URL.createObjectURL(blob);
+            driveImageUrlCache.set(b.driveFileId, url);
+          }
           b.url = url;
         } catch (e) {
           console.warn('bookmark image load failed', b.name, e);
@@ -1200,9 +1233,12 @@ export function initDriveBackend({
       }
       if (b.previewDriveFileId && !b.previewImageUrl) {
         try {
-          const blob = await downloadDriveBlobCached(b.previewDriveFileId);
-          const url = URL.createObjectURL(blob);
-          driveImageUrlCache.set(b.previewDriveFileId, url);
+          let url = driveImageUrlCache.get(b.previewDriveFileId);
+          if (!url) {
+            const blob = await downloadDriveBlobCached(b.previewDriveFileId);
+            url = URL.createObjectURL(blob);
+            driveImageUrlCache.set(b.previewDriveFileId, url);
+          }
           b.previewImageUrl = url;
         } catch (e) {
           console.warn('preview image load failed', b.name, e);
@@ -1272,7 +1308,6 @@ export function initDriveBackend({
     driveReady = false;
     driveUser = null;
     driveFolders = null;
-    appDataFileId = null;
     deferredAppDataPromise = null;
     deferredAppDataLoaded = false;
     deferredAppDataError = null;
@@ -1399,7 +1434,7 @@ export function initDriveBackend({
   };
   window.cloudSetActiveNotesTab = async (tabId) => {
     window.__notesActiveTabId = tabId;
-    if (!notesSaveRunPromise) scheduleSaveNotesData();
+    scheduleSaveNotesData();
   };
   window.cloudAddNotesTab = async ({ id, name }) => {
     const list = window.__notesTabList || [];
@@ -1757,6 +1792,8 @@ export function initDriveBackend({
     if (row) {
       await deleteDriveFile(row.driveFileId);
       await deleteDriveFile(row.previewDriveFileId);
+      revokeDriveImageUrl(row.driveFileId);
+      revokeDriveImageUrl(row.previewDriveFileId);
       await deleteCachedDriveBlob(row.driveFileId);
       await deleteCachedDriveBlob(row.previewDriveFileId);
     }
