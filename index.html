@@ -130,7 +130,7 @@
           <div class="profile-copy">
             <div class="profile-title">프로필</div>
             <div id="userInfo" class="profile-user-info">
-              Google 로그인 후 Drive 데이터를 동기화할 수 있습니다.
+              Google 로그인 후 앱 데이터를 동기화할 수 있습니다.
             </div>
           </div>
         </div>
@@ -908,7 +908,7 @@
     >
       <div class="flex flex-col items-center">
         <div class="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-white"></div>
-        <p class="text-white mt-4 text-lg">Google Drive에서 데이터를 다운로드 중...</p>
+        <p class="text-white mt-4 text-lg">앱 데이터를 다운로드 중...</p>
       </div>
     </div>
 
@@ -930,7 +930,7 @@
     <script src="src/config.js"></script>
 
     <script>
-      // Google Drive 저장 방식 버전
+      // Firebase metadata + Google Drive file storage version
 
       // 전역 상태
       window.customTasks = window.customTasks || [];
@@ -984,7 +984,7 @@
             } catch (err) {
               console.error(err);
               window.showAlert?.(
-                'Google Drive에서 데이터를 다운로드하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.'
+                '앱 데이터를 다운로드하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.'
               );
             } finally {
               document.getElementById('loading-overlay')?.classList.add('hidden');

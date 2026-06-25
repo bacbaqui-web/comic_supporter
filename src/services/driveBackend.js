@@ -5,10 +5,17 @@ export function initDriveBackend({
   initWorkMusic,
   initClipViewer
 }) {
-  // ===== Inlined main.js : Google Drive backend =====
-  // 모든 데이터는 로그인한 사용자의 Google Drive 안에 저장됩니다.
+  // ===== Inlined main.js : hybrid Firebase metadata + Google Drive file backend =====
+  // Firebase 설정이 없으면 기존 Google Drive JSON 저장 방식으로 자동 폴백합니다.
 
   const DRIVE_APP_CONFIG = window.APP_CONFIG || {};
+  const FIREBASE_CONFIG = DRIVE_APP_CONFIG.firebase || {};
+  const FIREBASE_ENABLED = !!(
+    FIREBASE_CONFIG.enabled &&
+    FIREBASE_CONFIG.apiKey &&
+    FIREBASE_CONFIG.projectId &&
+    FIREBASE_CONFIG.appId
+  );
   const DRIVE_CONFIG = DRIVE_APP_CONFIG.drive || {};
   const DRIVE_FOLDERS = DRIVE_CONFIG.folders || {};
   const DRIVE_FILES = DRIVE_CONFIG.files || {};
@@ -59,6 +66,9 @@ export function initDriveBackend({
   let deferredAppDataPromise = null;
   let deferredAppDataLoaded = false;
   let deferredAppDataError = null;
+  let firebaseApi = null;
+  let firebaseReadyPromise = null;
+  let firebaseUser = null;
   let clipPagesRendered = false;
   let autoSignInAttempting = false;
   let silentSignInUnavailable = false;
@@ -222,6 +232,151 @@ export function initDriveBackend({
   }
   function genId(prefix = 'id') {
     return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function toPlainData(value) {
+    return JSON.parse(JSON.stringify(value ?? null));
+  }
+
+  function getFirebaseUid() {
+    return firebaseUser?.uid || firebaseApi?.auth?.currentUser?.uid || null;
+  }
+
+  function isFirebaseActive() {
+    return !!(firebaseApi?.db && getFirebaseUid());
+  }
+
+  function getFirebaseStatusLabel() {
+    return isFirebaseActive() ? 'Firebase' : 'Google Drive';
+  }
+
+  function getFirebaseDocRef(section, id = 'main') {
+    const uid = getFirebaseUid();
+    if (!uid) throw new Error('Firebase 로그인이 필요합니다.');
+    return firebaseApi.doc(firebaseApi.db, 'users', uid, 'app', `${section}_${id}`);
+  }
+
+  function getFirebaseCollectionRef(name) {
+    const uid = getFirebaseUid();
+    if (!uid) throw new Error('Firebase 로그인이 필요합니다.');
+    return firebaseApi.collection(firebaseApi.db, 'users', uid, name);
+  }
+
+  async function setupFirebase() {
+    if (!FIREBASE_ENABLED) return false;
+    if (firebaseApi) return true;
+    if (firebaseReadyPromise) return firebaseReadyPromise;
+    firebaseReadyPromise = Promise.all([
+      import('https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js'),
+      import('https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js'),
+      import('https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js')
+    ])
+      .then(([appMod, authMod, firestoreMod]) => {
+        const firebaseApp = appMod.initializeApp(FIREBASE_CONFIG);
+        const auth = authMod.getAuth(firebaseApp);
+        const db = firestoreMod.getFirestore(firebaseApp);
+        firebaseApi = {
+          auth,
+          db,
+          GoogleAuthProvider: authMod.GoogleAuthProvider,
+          browserLocalPersistence: authMod.browserLocalPersistence,
+          collection: firestoreMod.collection,
+          deleteDoc: firestoreMod.deleteDoc,
+          doc: firestoreMod.doc,
+          getDoc: firestoreMod.getDoc,
+          getDocs: firestoreMod.getDocs,
+          setDoc: firestoreMod.setDoc,
+          signInWithCredential: authMod.signInWithCredential,
+          signOut: authMod.signOut,
+          writeBatch: firestoreMod.writeBatch
+        };
+        return authMod
+          .setPersistence(auth, authMod.browserLocalPersistence)
+          .then(() => {
+            firebaseUser = auth.currentUser || null;
+            return true;
+          })
+          .catch(() => true);
+      })
+      .catch((e) => {
+        console.warn('Firebase init skipped', e);
+        firebaseApi = null;
+        return false;
+      });
+    return firebaseReadyPromise;
+  }
+
+  async function signInFirebaseWithGoogleToken(accessToken) {
+    if (!accessToken || !(await setupFirebase())) return null;
+    try {
+      const credential = firebaseApi.GoogleAuthProvider.credential(null, accessToken);
+      const result = await firebaseApi.signInWithCredential(firebaseApi.auth, credential);
+      firebaseUser = result.user || firebaseApi.auth.currentUser || null;
+      return firebaseUser;
+    } catch (e) {
+      console.warn('Firebase sign-in skipped', e);
+      firebaseUser = null;
+      return null;
+    }
+  }
+
+  async function signOutFirebase() {
+    if (!firebaseApi?.auth) return;
+    try {
+      await firebaseApi.signOut(firebaseApi.auth);
+    } catch (e) {
+      console.warn('Firebase sign-out skipped', e);
+    } finally {
+      firebaseUser = null;
+    }
+  }
+
+  async function getFirebaseDocument(section, id = 'main') {
+    if (!isFirebaseActive()) return null;
+    const snap = await firebaseApi.getDoc(getFirebaseDocRef(section, id));
+    return snap.exists() ? snap.data() : null;
+  }
+
+  async function setFirebaseDocument(section, id, data) {
+    if (!isFirebaseActive()) return false;
+    await firebaseApi.setDoc(getFirebaseDocRef(section, id), toPlainData(data));
+    return true;
+  }
+
+  async function syncFirebaseCollection(name, rows, getId) {
+    if (!isFirebaseActive()) return false;
+    const collectionRef = getFirebaseCollectionRef(name);
+    const existing = await firebaseApi.getDocs(collectionRef);
+    const nextIds = new Set(rows.map(getId).filter(Boolean));
+    let batch = firebaseApi.writeBatch(firebaseApi.db);
+    let count = 0;
+    const commitIfNeeded = async () => {
+      if (!count) return;
+      await batch.commit();
+      batch = firebaseApi.writeBatch(firebaseApi.db);
+      count = 0;
+    };
+    for (const row of rows) {
+      const id = getId(row);
+      if (!id) continue;
+      batch.set(firebaseApi.doc(collectionRef, id), toPlainData(row));
+      count++;
+      if (count >= 450) await commitIfNeeded();
+    }
+    existing.forEach((snap) => {
+      if (!nextIds.has(snap.id)) {
+        batch.delete(snap.ref);
+        count++;
+      }
+    });
+    await commitIfNeeded();
+    return true;
+  }
+
+  async function readFirebaseCollection(name) {
+    if (!isFirebaseActive()) return [];
+    const snap = await firebaseApi.getDocs(getFirebaseCollectionRef(name));
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
 
   function downloadTextFile(fileName, text, mimeType = 'text/plain;charset=utf-8') {
@@ -483,6 +638,7 @@ export function initDriveBackend({
           driveAccessToken = resp.access_token;
           silentSignInUnavailable = false;
           rememberAutoLogin();
+          await signInFirebaseWithGoogleToken(resp.access_token);
           await afterGoogleLogin();
         } else {
           autoSignInAttempting = false;
@@ -840,6 +996,140 @@ export function initDriveBackend({
     return base;
   }
 
+  async function saveFirebaseNotesPart(notesPart) {
+    const tabs = [
+      ...(notesPart?.notesTabList?.length
+        ? notesPart.notesTabList
+        : [{ id: 'memo', name: '메모', order: 0 }])
+    ].sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    const notes = notesPart?.notesTabs || {};
+    await setFirebaseDocument('notes', 'meta', {
+      version: 1,
+      updatedAt: notesPart?.updatedAt || new Date().toISOString(),
+      notesActiveTabId: notesPart?.notesActiveTabId || tabs[0]?.id || 'memo',
+      notesTabList: tabs
+    });
+    await syncFirebaseCollection(
+      'notesTabs',
+      tabs.map((tab) => ({ ...tab, text: notes[tab.id] || '' })),
+      (tab) => tab.id
+    );
+  }
+
+  async function loadFirebaseNotesPart() {
+    const meta = await getFirebaseDocument('notes', 'meta');
+    if (!meta?.notesTabList) return null;
+    const rows = await readFirebaseCollection('notesTabs');
+    const textById = Object.fromEntries(rows.map((row) => [row.id, row.text || '']));
+    const notesTabList = meta.notesTabList.length
+      ? meta.notesTabList
+      : [{ id: 'memo', name: '메모', order: 0 }];
+    const notesTabs = {};
+    notesTabList.forEach((tab) => {
+      notesTabs[tab.id] = textById[tab.id] || '';
+    });
+    return {
+      notesTabList,
+      notesTabs,
+      notesActiveTabId: meta.notesActiveTabId || notesTabList[0]?.id || 'memo',
+      updatedAt: meta.updatedAt || new Date().toISOString()
+    };
+  }
+
+  async function saveFirebaseBookmarksPart(bookmarksPart) {
+    const rows = (bookmarksPart?.imageBookmarks || []).map((bookmark) => ({
+      ...bookmark,
+      id: bookmark.id || genId('bm')
+    }));
+    await setFirebaseDocument('bookmarks', 'meta', {
+      version: 1,
+      updatedAt: bookmarksPart?.updatedAt || new Date().toISOString(),
+      bookmarkTabList: bookmarksPart?.bookmarkTabList || [
+        { id: 'default', name: '기본', order: 0 }
+      ],
+      bookmarkActiveTabId: bookmarksPart?.bookmarkActiveTabId || 'default'
+    });
+    await syncFirebaseCollection('bookmarks', rows, (bookmark) => bookmark.id);
+  }
+
+  async function loadFirebaseBookmarksPart() {
+    const meta = await getFirebaseDocument('bookmarks', 'meta');
+    if (!meta) return null;
+    const imageBookmarks = await readFirebaseCollection('bookmarks');
+    return {
+      imageBookmarks,
+      bookmarkTabList: meta.bookmarkTabList || [{ id: 'default', name: '기본', order: 0 }],
+      bookmarkActiveTabId: meta.bookmarkActiveTabId || 'default',
+      updatedAt: meta.updatedAt || new Date().toISOString()
+    };
+  }
+
+  async function saveFirebaseWorkmusicPart(workmusicPart) {
+    const rows = (workmusicPart?.workMusicSongs || []).map((song) => ({
+      ...song,
+      id: song.id || genId('wm')
+    }));
+    await setFirebaseDocument('workmusic', 'meta', {
+      version: 1,
+      updatedAt: workmusicPart?.updatedAt || new Date().toISOString(),
+      workMusicMode: workmusicPart?.workMusicMode || 'sequential',
+      workMusicCurrentIndex: Number(workmusicPart?.workMusicCurrentIndex || 0),
+      workMusicVolume: Number(workmusicPart?.workMusicVolume ?? 80),
+      workMusicLastVolume: Number(workmusicPart?.workMusicLastVolume ?? 80),
+      workMusicIsMuted: !!workmusicPart?.workMusicIsMuted,
+      workMusicTabList: workmusicPart?.workMusicTabList || [
+        { id: 'default', name: '기본', order: 0 }
+      ],
+      workMusicActiveTabId: workmusicPart?.workMusicActiveTabId || 'default'
+    });
+    await syncFirebaseCollection('workmusicSongs', rows, (song) => song.id);
+  }
+
+  async function loadFirebaseWorkmusicPart() {
+    const meta = await getFirebaseDocument('workmusic', 'meta');
+    if (!meta) return null;
+    return {
+      workMusicSongs: await readFirebaseCollection('workmusicSongs'),
+      workMusicMode: meta.workMusicMode || 'sequential',
+      workMusicCurrentIndex: Number(meta.workMusicCurrentIndex || 0),
+      workMusicVolume: Number(meta.workMusicVolume ?? 80),
+      workMusicLastVolume: Number(meta.workMusicLastVolume ?? 80),
+      workMusicIsMuted: !!meta.workMusicIsMuted,
+      workMusicTabList: meta.workMusicTabList || [{ id: 'default', name: '기본', order: 0 }],
+      workMusicActiveTabId: meta.workMusicActiveTabId || 'default',
+      updatedAt: meta.updatedAt || new Date().toISOString()
+    };
+  }
+
+  async function saveAppPartsToFirebase(parts, { notes = true, nonNotes = true } = {}) {
+    if (!isFirebaseActive()) return false;
+    const jobs = [];
+    if (nonNotes) {
+      jobs.push(
+        setFirebaseDocument('calendar', 'main', parts.calendar),
+        saveFirebaseBookmarksPart(parts.bookmarks),
+        saveFirebaseWorkmusicPart(parts.workmusic),
+        setFirebaseDocument('clipviewer', 'main', parts.clipviewer)
+      );
+    }
+    if (notes) jobs.push(saveFirebaseNotesPart(parts.notes));
+    await Promise.all(jobs);
+    return true;
+  }
+
+  async function loadAppPartsFromFirebase({ includeCalendar = true, includeDeferred = true } = {}) {
+    if (!isFirebaseActive()) return null;
+    const parts = {};
+    if (includeCalendar) parts.calendar = await getFirebaseDocument('calendar', 'main');
+    if (includeDeferred) {
+      parts.notes = await loadFirebaseNotesPart();
+      parts.bookmarks = await loadFirebaseBookmarksPart();
+      parts.workmusic = await loadFirebaseWorkmusicPart();
+      parts.clipviewer = await getFirebaseDocument('clipviewer', 'main');
+    }
+    return Object.values(parts).some(Boolean) ? parts : null;
+  }
+
   async function saveJsonToDrive(folderId, fileName, obj) {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
     const existing = await findDriveFile(fileName, folderId, 'application/json');
@@ -998,13 +1288,18 @@ export function initDriveBackend({
   async function saveAppDataNow() {
     if (!driveReady || !driveAccessToken) return;
     return withDriveSaveInFlight(async () => {
-      setDriveBusy('Google Drive 저장 중...');
+      setDriveBusy(`${getFirebaseStatusLabel()} 저장 중...`);
       try {
-        const folders = await ensureDriveFolders();
         const data = buildAppData();
         currentAppData = data;
         writeLocalAppDataCache(data);
         const parts = splitAppDataForDrive(data);
+        if (isFirebaseActive()) {
+          await saveAppPartsToFirebase(parts);
+          setDriveStatus('Firebase 저장 완료');
+          return;
+        }
+        const folders = await ensureDriveFolders();
         await Promise.all([
           saveJsonToDrive(folders.system.id, DRIVE_CALENDAR_FILE, parts.calendar),
           saveNotesToDrive(folders.notes.id, folders.system.id, parts.notes),
@@ -1016,7 +1311,7 @@ export function initDriveBackend({
         setDriveStatus('Google Drive 저장 완료');
       } catch (e) {
         console.error(e);
-        setDriveStatus('Drive 저장 실패', true);
+        setDriveStatus(`${getFirebaseStatusLabel()} 저장 실패`, true);
         throw e;
       }
     });
@@ -1024,13 +1319,18 @@ export function initDriveBackend({
   async function saveNonNotesDataNow() {
     if (!driveReady || !driveAccessToken) return;
     return withDriveSaveInFlight(async () => {
-      setDriveBusy('Google Drive 저장 중...');
+      setDriveBusy(`${getFirebaseStatusLabel()} 저장 중...`);
       try {
-        const folders = await ensureDriveFolders();
         const data = buildAppData();
         currentAppData = data;
         writeLocalAppDataCache(data);
         const parts = splitAppDataForDrive(data);
+        if (isFirebaseActive()) {
+          await saveAppPartsToFirebase(parts, { notes: false });
+          setDriveStatus('Firebase 저장 완료');
+          return;
+        }
+        const folders = await ensureDriveFolders();
         await Promise.all([
           saveJsonToDrive(folders.system.id, DRIVE_CALENDAR_FILE, parts.calendar),
           saveJsonToDrive(folders.system.id, DRIVE_BOOKMARKS_FILE, parts.bookmarks),
@@ -1041,7 +1341,7 @@ export function initDriveBackend({
         setDriveStatus('Google Drive 저장 완료');
       } catch (e) {
         console.error(e);
-        setDriveStatus('Drive 저장 실패', true);
+        setDriveStatus(`${getFirebaseStatusLabel()} 저장 실패`, true);
         throw e;
       }
     });
@@ -1049,13 +1349,18 @@ export function initDriveBackend({
   async function saveNotesDataNow() {
     if (!driveReady || !driveAccessToken) return;
     return withDriveSaveInFlight(async () => {
-      setDriveBusy('메모 Drive 저장 중...');
+      setDriveBusy(`메모 ${getFirebaseStatusLabel()} 저장 중...`);
       try {
-        const folders = await ensureDriveFolders();
         const data = buildAppData();
         currentAppData = data;
         writeLocalAppDataCache(data);
         const parts = splitAppDataForDrive(data);
+        if (isFirebaseActive()) {
+          await saveAppPartsToFirebase(parts, { notes: true, nonNotes: false });
+          setDriveStatus('메모 Firebase 저장 완료');
+          return;
+        }
+        const folders = await ensureDriveFolders();
         await saveNotesToDrive(folders.notes.id, folders.system.id, parts.notes);
         setDriveStatus('메모 Drive 저장 완료');
       } catch (e) {
@@ -1090,7 +1395,7 @@ export function initDriveBackend({
     clearTimeout(nonNotesSaveTimer);
     currentAppData = buildAppData();
     writeLocalAppDataCache(currentAppData);
-    setDriveStatus('로컬 반영됨 · Drive 저장 예약됨');
+    setDriveStatus(`로컬 반영됨 · ${getFirebaseStatusLabel()} 저장 예약됨`);
     nonNotesSaveTimer = setTimeout(() => {
       nonNotesSaveTimer = null;
       queueDriveSave(saveNonNotesDataNow).catch((e) => console.error(e));
@@ -1112,7 +1417,7 @@ export function initDriveBackend({
     clearTimeout(notesSaveTimer);
     currentAppData = buildAppData();
     writeLocalAppDataCache(currentAppData);
-    setDriveStatus('메모 저장 예약됨');
+    setDriveStatus(`메모 ${getFirebaseStatusLabel()} 저장 예약됨`);
     notesSaveTimer = setTimeout(() => {
       notesSaveTimer = null;
       queueNotesSave().catch((e) => console.error(e));
@@ -1120,6 +1425,14 @@ export function initDriveBackend({
   }
 
   async function loadAppDataFromDrive() {
+    const firebaseParts = await loadAppPartsFromFirebase();
+    if (firebaseParts) {
+      applyAppData(mergeDriveParts(firebaseParts));
+      writeLocalAppDataCache(buildAppData());
+      await resolveDriveBookmarkImages();
+      await window.loadClipPagesFromDrive?.(false);
+      return;
+    }
     const folders = await ensureDriveFolders();
     const legacyCalendar = await getLegacyDriveFolder(DRIVE_CALENDAR_FOLDER);
     const legacyBookmarks = await getLegacyDriveFolder(DRIVE_BOOKMARKS_FOLDER);
@@ -1154,6 +1467,9 @@ export function initDriveBackend({
     }
     applyAppData(mergeDriveParts(parts));
     writeLocalAppDataCache(buildAppData());
+    if (isFirebaseActive()) {
+      await saveAppPartsToFirebase(splitAppDataForDrive(buildAppData()));
+    }
     await resolveDriveBookmarkImages();
     await window.loadClipPagesFromDrive?.(false);
   }
@@ -1170,6 +1486,19 @@ export function initDriveBackend({
   }
 
   async function loadCalendarPartFromDrive() {
+    const firebaseParts = await loadAppPartsFromFirebase({
+      includeCalendar: true,
+      includeDeferred: false
+    });
+    const firebaseCalendar = firebaseParts?.calendar;
+    if (firebaseCalendar) {
+      window.customTasks = firebaseCalendar.customTasks || [];
+      window.taskStatus = firebaseCalendar.taskStatus || {};
+      currentAppData.customTasks = window.customTasks;
+      currentAppData.state = currentAppData.state || {};
+      currentAppData.state.taskStatus = window.taskStatus;
+      return { firebase: true, calendar: firebaseCalendar };
+    }
     const { folders, legacyCalendar } = await getDriveLoadFolders();
     const calendar =
       (await loadJsonFromDrive(folders.system.id, DRIVE_CALENDAR_FILE)) ||
@@ -1185,6 +1514,24 @@ export function initDriveBackend({
   }
 
   async function loadDeferredAppDataFromDrive() {
+    const firebaseParts = await loadAppPartsFromFirebase({
+      includeCalendar: false,
+      includeDeferred: true
+    });
+    if (firebaseParts) {
+      firebaseParts.calendar = {
+        customTasks: window.customTasks || [],
+        taskStatus: window.taskStatus || {},
+        updatedAt: new Date().toISOString()
+      };
+      applyAppData(mergeDriveParts(firebaseParts));
+      writeLocalAppDataCache(buildAppData());
+      renderEverything();
+      resolveDriveBookmarkImages()
+        .then(() => window.renderImageBookmarks?.())
+        .catch((e) => console.warn('bookmark image background load failed', e));
+      return;
+    }
     const { folders, legacyBookmarks, legacyWorkmusic, legacyClipviewer } =
       await getDriveLoadFolders();
     const parts = {
@@ -1210,6 +1557,9 @@ export function initDriveBackend({
     };
     applyAppData(mergeDriveParts(parts));
     writeLocalAppDataCache(buildAppData());
+    if (isFirebaseActive()) {
+      await saveAppPartsToFirebase(splitAppDataForDrive(buildAppData()));
+    }
     renderEverything();
     resolveDriveBookmarkImages()
       .then(() => window.renderImageBookmarks?.())
@@ -1287,7 +1637,7 @@ export function initDriveBackend({
   }
 
   signInBtn.onclick = () => doSignIn();
-  signOutBtn.onclick = () => {
+  signOutBtn.onclick = async () => {
     if (
       hasPendingDriveWork() &&
       !window.confirm(
@@ -1304,6 +1654,7 @@ export function initDriveBackend({
     notesSaveTimer = null;
     clearLocalAppDataCache(signedOutUser);
     clearDriveBlobCache();
+    await signOutFirebase();
     driveAccessToken = null;
     driveReady = false;
     driveUser = null;

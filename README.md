@@ -15,3 +15,25 @@ https://bacbaqui-web.github.io/magamiscoming/privacy.html
 
 Terms of Service:
 https://bacbaqui-web.github.io/magamiscoming/terms.html
+
+## Storage
+
+The app supports a hybrid storage mode:
+
+- Firebase Authentication + Firestore: user-specific app metadata such as calendar, notes, bookmark lists, work music lists, and CLIP manifests
+- Google Drive: large user files such as bookmark images and CLIP preview images
+
+Set `window.APP_CONFIG.firebase.enabled` to `true` and fill the Firebase web app config in `src/config.js` to enable Firebase metadata storage. If Firebase is not configured or sign-in fails, the app falls back to the existing Google Drive JSON storage.
+
+Recommended Firestore rule shape:
+
+```js
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
+```

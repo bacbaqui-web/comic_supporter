@@ -2,6 +2,13 @@
   window.APP_CONFIG = Object.freeze({
     googleClientId: '75399802933-ob5opqbukj1enr6v069rocbjo9508b35.apps.googleusercontent.com',
     youtubeApiKey: 'AIzaSyAxMNbkyUocpD_r-jnvQH_fiuYtxL952CY',
+    firebase: {
+      enabled: false,
+      apiKey: '',
+      authDomain: '',
+      projectId: '',
+      appId: ''
+    },
     drive: {
       scope: 'https://www.googleapis.com/auth/drive.file',
       folders: {
