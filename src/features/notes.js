@@ -27,20 +27,32 @@ export function initNotes() {
     return { tabId, value: window.__notesTabs[tabId] };
   };
 
-  const setActive = async (tabId) => {
-    const prev = syncActiveNote();
-    if (window.cloudSaveNotesNow)
-      window.cloudSaveNotesNow(prev.tabId, prev.value).catch((e) => console.error(e));
-    else if (window.cloudSaveNotesFor)
-      Promise.resolve(window.cloudSaveNotesFor(prev.tabId, prev.value)).catch((e) =>
-        console.error(e)
-      );
+  let tabSwitchInProgress = false;
 
-    window.__notesActiveTabId = tabId;
-    if (window.cloudSetActiveNotesTab)
-      Promise.resolve(window.cloudSetActiveNotesTab(tabId)).catch((e) => console.error(e));
-    render();
-    notesArea.value = (window.__notesTabs || {})[tabId] || '';
+  const setActive = async (tabId) => {
+    if (tabSwitchInProgress || tabId === (window.__notesActiveTabId || 'memo')) return;
+    tabSwitchInProgress = true;
+    const prev = syncActiveNote();
+    try {
+      if (window.cloudSaveNotesNow) {
+        await window.cloudSaveNotesNow(prev.tabId, prev.value);
+      } else if (window.cloudSaveNotesFor) {
+        await Promise.resolve(window.cloudSaveNotesFor(prev.tabId, prev.value));
+      }
+
+      window.__notesActiveTabId = tabId;
+      if (window.cloudSetActiveNotesTab)
+        await Promise.resolve(window.cloudSetActiveNotesTab(tabId));
+      render();
+      notesArea.value = (window.__notesTabs || {})[tabId] || '';
+    } catch (e) {
+      console.error(e);
+      window.showAlert?.(
+        '메모 저장이 끝나지 않아 탭을 전환하지 못했습니다. 잠시 후 다시 시도해 주세요.'
+      );
+    } finally {
+      tabSwitchInProgress = false;
+    }
   };
 
   const render = () => {
@@ -142,8 +154,7 @@ export function initNotes() {
       getTabs,
       onCreate: async (name) => {
         const prev = syncActiveNote();
-        if (window.cloudSaveNotesNow)
-          window.cloudSaveNotesNow(prev.tabId, prev.value).catch((e) => console.error(e));
+        if (window.cloudSaveNotesNow) await window.cloudSaveNotesNow(prev.tabId, prev.value);
         const id = genId();
         await window.cloudAddNotesTab?.({ id, name });
       }
