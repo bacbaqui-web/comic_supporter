@@ -36,8 +36,6 @@ export function initDriveBackend({
   const DRIVE_CLIP_FILE = DRIVE_FILES.clipviewer || 'clipviewer.json';
   const DEFAULT_GOOGLE_CLIENT_ID = DRIVE_APP_CONFIG.googleClientId || '';
   const AUTO_LOGIN_STORAGE_KEY = 'magamiscoming.autoLogin';
-  const LOCAL_APP_CACHE_PREFIX = 'magamiscoming.appData.';
-  const DRIVE_BLOB_CACHE_NAME = 'magamiscoming-drive-blobs-v1';
   const SAVE_DELAY_MS = 450;
   const NON_NOTES_SAVE_DELAY_MS = 500;
   const NOTES_INPUT_DELAY_MS = 350;
@@ -131,50 +129,6 @@ export function initDriveBackend({
       localStorage.removeItem(AUTO_LOGIN_STORAGE_KEY);
     } catch (_) {}
   }
-  function getLocalCacheUserKey(user = driveUser) {
-    return (
-      String(user?.email || user?.sub || 'default')
-        .trim()
-        .toLowerCase() || 'default'
-    );
-  }
-  function getLocalAppCacheKey(user = driveUser) {
-    return LOCAL_APP_CACHE_PREFIX + getLocalCacheUserKey(user);
-  }
-  function readLocalAppDataCache(user = driveUser) {
-    try {
-      const raw = localStorage.getItem(getLocalAppCacheKey(user));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return parsed?.data && typeof parsed.data === 'object' ? parsed.data : null;
-    } catch (e) {
-      console.warn('local app cache read failed', e);
-      return null;
-    }
-  }
-  function writeLocalAppDataCache(data, user = driveUser) {
-    try {
-      if (!data || typeof data !== 'object') return;
-      localStorage.setItem(
-        getLocalAppCacheKey(user),
-        JSON.stringify({ version: 1, cachedAt: new Date().toISOString(), data })
-      );
-    } catch (e) {
-      console.warn('local app cache write failed', e);
-    }
-  }
-  function clearLocalAppDataCache(user = driveUser) {
-    try {
-      localStorage.removeItem(getLocalAppCacheKey(user));
-    } catch (_) {}
-  }
-
-  function driveBlobCacheUrl(fileId) {
-    return new URL(
-      `/__magamiscoming_drive_blob_cache__/${encodeURIComponent(fileId)}`,
-      location.origin
-    ).toString();
-  }
   function revokeDriveImageUrl(fileId) {
     const url = driveImageUrlCache.get(fileId);
     if (url) URL.revokeObjectURL(url);
@@ -186,42 +140,8 @@ export function initDriveBackend({
     }
     driveImageUrlCache.clear();
   }
-  async function getCachedDriveBlob(fileId) {
-    if (!fileId || !window.caches) return null;
-    try {
-      const cache = await caches.open(DRIVE_BLOB_CACHE_NAME);
-      const res = await cache.match(driveBlobCacheUrl(fileId));
-      return res ? await res.blob() : null;
-    } catch (e) {
-      console.warn('Drive blob cache read failed', e);
-      return null;
-    }
-  }
-  async function putCachedDriveBlob(fileId, blob) {
-    if (!fileId || !blob || !window.caches) return;
-    try {
-      const cache = await caches.open(DRIVE_BLOB_CACHE_NAME);
-      await cache.put(
-        driveBlobCacheUrl(fileId),
-        new Response(blob, { headers: { 'Content-Type': blob.type || 'application/octet-stream' } })
-      );
-    } catch (e) {
-      console.warn('Drive blob cache write failed', e);
-    }
-  }
-  async function deleteCachedDriveBlob(fileId) {
-    if (!fileId || !window.caches) return;
-    try {
-      const cache = await caches.open(DRIVE_BLOB_CACHE_NAME);
-      await cache.delete(driveBlobCacheUrl(fileId));
-    } catch (_) {}
-  }
-  async function clearDriveBlobCache() {
+  function clearDriveImageUrls() {
     revokeAllDriveImageUrls();
-    if (!window.caches) return;
-    try {
-      await caches.delete(DRIVE_BLOB_CACHE_NAME);
-    } catch (_) {}
   }
 
   function nowMs() {
@@ -911,13 +831,6 @@ export function initDriveBackend({
       (r) => r.blob()
     );
   }
-  async function downloadDriveBlobCached(fileId) {
-    const cached = await getCachedDriveBlob(fileId);
-    if (cached) return cached;
-    const blob = await downloadDriveBlob(fileId);
-    putCachedDriveBlob(fileId, blob);
-    return blob;
-  }
   async function downloadDriveText(fileId) {
     return await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`).then(
       (r) => r.text()
@@ -1292,7 +1205,6 @@ export function initDriveBackend({
       try {
         const data = buildAppData();
         currentAppData = data;
-        writeLocalAppDataCache(data);
         const parts = splitAppDataForDrive(data);
         if (isFirebaseActive()) {
           await saveAppPartsToFirebase(parts);
@@ -1323,7 +1235,6 @@ export function initDriveBackend({
       try {
         const data = buildAppData();
         currentAppData = data;
-        writeLocalAppDataCache(data);
         const parts = splitAppDataForDrive(data);
         if (isFirebaseActive()) {
           await saveAppPartsToFirebase(parts, { notes: false });
@@ -1353,7 +1264,6 @@ export function initDriveBackend({
       try {
         const data = buildAppData();
         currentAppData = data;
-        writeLocalAppDataCache(data);
         const parts = splitAppDataForDrive(data);
         if (isFirebaseActive()) {
           await saveAppPartsToFirebase(parts, { notes: true, nonNotes: false });
@@ -1394,8 +1304,7 @@ export function initDriveBackend({
   function scheduleSaveNonNotesData() {
     clearTimeout(nonNotesSaveTimer);
     currentAppData = buildAppData();
-    writeLocalAppDataCache(currentAppData);
-    setDriveStatus(`로컬 반영됨 · ${getFirebaseStatusLabel()} 저장 예약됨`);
+    setDriveStatus(`${getFirebaseStatusLabel()} 저장 예약됨`);
     nonNotesSaveTimer = setTimeout(() => {
       nonNotesSaveTimer = null;
       queueDriveSave(saveNonNotesDataNow).catch((e) => console.error(e));
@@ -1405,7 +1314,6 @@ export function initDriveBackend({
   function scheduleSaveAppData() {
     clearTimeout(nonNotesSaveTimer);
     currentAppData = buildAppData();
-    writeLocalAppDataCache(currentAppData);
     setDriveStatus('저장 예약됨');
     nonNotesSaveTimer = setTimeout(() => {
       nonNotesSaveTimer = null;
@@ -1416,7 +1324,6 @@ export function initDriveBackend({
   function scheduleSaveNotesData() {
     clearTimeout(notesSaveTimer);
     currentAppData = buildAppData();
-    writeLocalAppDataCache(currentAppData);
     setDriveStatus(`메모 ${getFirebaseStatusLabel()} 저장 예약됨`);
     notesSaveTimer = setTimeout(() => {
       notesSaveTimer = null;
@@ -1428,7 +1335,6 @@ export function initDriveBackend({
     const firebaseParts = await loadAppPartsFromFirebase();
     if (firebaseParts) {
       applyAppData(mergeDriveParts(firebaseParts));
-      writeLocalAppDataCache(buildAppData());
       await resolveDriveBookmarkImages();
       await window.loadClipPagesFromDrive?.(false);
       return;
@@ -1461,12 +1367,10 @@ export function initDriveBackend({
     if (!hasAny) {
       currentAppData = getDefaultAppData();
       applyAppData(currentAppData);
-      writeLocalAppDataCache(currentAppData);
       await saveAppDataNow();
       return;
     }
     applyAppData(mergeDriveParts(parts));
-    writeLocalAppDataCache(buildAppData());
     if (isFirebaseActive()) {
       await saveAppPartsToFirebase(splitAppDataForDrive(buildAppData()));
     }
@@ -1525,7 +1429,6 @@ export function initDriveBackend({
         updatedAt: new Date().toISOString()
       };
       applyAppData(mergeDriveParts(firebaseParts));
-      writeLocalAppDataCache(buildAppData());
       renderEverything();
       resolveDriveBookmarkImages()
         .then(() => window.renderImageBookmarks?.())
@@ -1556,7 +1459,6 @@ export function initDriveBackend({
       updatedAt: new Date().toISOString()
     };
     applyAppData(mergeDriveParts(parts));
-    writeLocalAppDataCache(buildAppData());
     if (isFirebaseActive()) {
       await saveAppPartsToFirebase(splitAppDataForDrive(buildAppData()));
     }
@@ -1572,7 +1474,7 @@ export function initDriveBackend({
         try {
           let url = driveImageUrlCache.get(b.driveFileId);
           if (!url) {
-            const blob = await downloadDriveBlobCached(b.driveFileId);
+            const blob = await downloadDriveBlob(b.driveFileId);
             url = URL.createObjectURL(blob);
             driveImageUrlCache.set(b.driveFileId, url);
           }
@@ -1585,7 +1487,7 @@ export function initDriveBackend({
         try {
           let url = driveImageUrlCache.get(b.previewDriveFileId);
           if (!url) {
-            const blob = await downloadDriveBlobCached(b.previewDriveFileId);
+            const blob = await downloadDriveBlob(b.previewDriveFileId);
             url = URL.createObjectURL(blob);
             driveImageUrlCache.set(b.previewDriveFileId, url);
           }
@@ -1607,13 +1509,6 @@ export function initDriveBackend({
       signOutBtn.classList.remove('hidden');
       driveReady = true;
       window.isAuthReady = true;
-      const cachedData = readLocalAppDataCache(driveUser);
-      if (cachedData) {
-        applyAppData(cachedData);
-        renderEverything();
-        loadingOverlay.classList.add('hidden');
-        setDriveStatus('로컬 캐시 표시 중');
-      }
       await loadCalendarPartFromDrive();
       renderEverything();
       loadingOverlay.classList.add('hidden');
@@ -1646,14 +1541,12 @@ export function initDriveBackend({
     ) {
       return;
     }
-    const signedOutUser = driveUser;
     forgetAutoLogin();
     clearTimeout(nonNotesSaveTimer);
     clearTimeout(notesSaveTimer);
     nonNotesSaveTimer = null;
     notesSaveTimer = null;
-    clearLocalAppDataCache(signedOutUser);
-    clearDriveBlobCache();
+    clearDriveImageUrls();
     await signOutFirebase();
     driveAccessToken = null;
     driveReady = false;
@@ -1962,19 +1855,16 @@ export function initDriveBackend({
       });
       uploaded.createdName = name;
       uploaded.createdMs = ms;
-      putCachedDriveBlob(uploaded.id, file);
       return uploaded;
     } finally {
       finishDriveUpload();
     }
   }
 
-  async function uploadDriveMultipartCached(args) {
+  async function uploadDriveMultipartWithProgress(args) {
     beginDriveUpload('Drive 업로드');
     try {
-      const uploaded = await uploadDriveMultipart(args);
-      if (uploaded?.id && args?.blob) putCachedDriveBlob(uploaded.id, args.blob);
-      return uploaded;
+      return await uploadDriveMultipart(args);
     } finally {
       finishDriveUpload();
     }
@@ -2063,7 +1953,7 @@ export function initDriveBackend({
         type: 'local_pending_image',
         driveFileId: null,
         title: null,
-        sourceDomain: pageUrl ? window.extractDomain?.(pageUrl) || 'Unknown' : '로컬 캐시',
+        sourceDomain: pageUrl ? window.extractDomain?.(pageUrl) || 'Unknown' : 'Drive 업로드 대기',
         bookmarkTabId: window.__bookmarkActiveTabId || 'default',
         timestamp: driveTimestamp(ms),
         timestampMs: ms,
@@ -2071,8 +1961,7 @@ export function initDriveBackend({
       };
       window.imageBookmarks.push(row);
       renderEverything();
-      scheduleSaveNonNotesData();
-      setDriveStatus('이미지 로컬 반영됨 · Drive 업로드 중...');
+      setDriveStatus('이미지 Drive 업로드 중...');
       uploadFileToDrive(file, null, 'bookmark')
         .then((uploaded) => {
           const b = (window.imageBookmarks || []).find((x) => x.id === row.id);
@@ -2117,8 +2006,7 @@ export function initDriveBackend({
     b.previewImageUrl = URL.createObjectURL(file);
     b.previewUploadStatus = 'pending';
     renderEverything();
-    scheduleSaveNonNotesData();
-    setDriveStatus('미리보기 로컬 반영됨 · Drive 업로드 중...');
+    setDriveStatus('미리보기 Drive 업로드 중...');
     uploadFileToDrive(file, null, 'bookmark_preview')
       .then((uploaded) => {
         const row = (window.imageBookmarks || []).find((x) => x.id === bookmarkId);
@@ -2145,8 +2033,6 @@ export function initDriveBackend({
       await deleteDriveFile(row.previewDriveFileId);
       revokeDriveImageUrl(row.driveFileId);
       revokeDriveImageUrl(row.previewDriveFileId);
-      await deleteCachedDriveBlob(row.driveFileId);
-      await deleteCachedDriveBlob(row.previewDriveFileId);
     }
     window.imageBookmarks = (window.imageBookmarks || []).filter((b) => b.id !== id);
     renderEverything();
@@ -2173,8 +2059,8 @@ export function initDriveBackend({
     isDriveLoggedIn: () => !!driveAccessToken,
     ensureClipCurrentFolder: async () => (await ensureDriveFolders()).clipCurrent,
     findDriveFile,
-    uploadDriveMultipart: uploadDriveMultipartCached,
-    downloadDriveBlob: downloadDriveBlobCached,
+    uploadDriveMultipart: uploadDriveMultipartWithProgress,
+    downloadDriveBlob,
     beginDriveUploadBatch,
     getClipPages: () => (currentAppData.state && currentAppData.state.clipPages) || [],
     saveClipManifest: async (manifest) => {
